@@ -5,7 +5,7 @@ const path = require('path');
 try {
     const appJsonPath = './app.json';
     const changelogPath = './CHANGELOG.md';
-    
+
     if (!fs.existsSync(appJsonPath)) {
         throw new Error('app.json not found');
     }
@@ -50,7 +50,7 @@ try {
     const commands = [
         `git add app.json CHANGELOG.md`,
         `git commit -m "chore: bump version to v${newVersion}${releaseNotes ? '\n\n' + releaseNotes : ''}"`,
-        `git push origin main`,
+        `git push origin master`,
         `git tag v${newVersion}`,
         `git push origin v${newVersion}`
     ];
