@@ -12,6 +12,8 @@
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@shopify/flash-list": "2.0.2",
+    "@types/crypto-js": "^4.2.2",
+    "crypto-js": "^4.2.0",
     "expo": "~54.0.33",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",

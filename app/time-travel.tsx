@@ -1,17 +1,22 @@
-import React, { useState, useCallback } from 'react'
-import {
-  View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  StatusBar, ActivityIndicator, Alert,
-} from 'react-native'
 import { MaterialIcons } from '@expo/vector-icons'
-import { useRouter } from 'expo-router'
 import { useFocusEffect } from '@react-navigation/native'
+import { useRouter } from 'expo-router'
+import React, { useCallback, useState } from 'react'
+import {
+  ActivityIndicator, Alert,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native'
 import { AppHeader } from '../src/components/AppHeader'
 import { BottomNav } from '../src/components/BottomNav'
 import { SecurityPulse } from '../src/components/SecurityPulse'
+import { BackupListItem, listBackups } from '../src/services/backup.service'
 import { C, R, S } from '../src/theme'
-import { listBackups, BackupListItem } from '../src/services/backup.service'
-import { formatDate, formatRelative } from '../src/utils/date'
+import { formatDate } from '../src/utils/date'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -39,7 +44,7 @@ export default function TimeTravelScreen() {
     setLoading(true)
     listBackups()
       .then(list => { setBackups(list); setSelectedIdx(0) })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoading(false))
   }, []))
 
@@ -205,9 +210,9 @@ export default function TimeTravelScreen() {
                 <View style={styles.exportIcon}>
                   <MaterialIcons name="share" size={22} color={C.primary} />
                 </View>
-                <View>
+                <View style={{ flex: 1, overflow: 'hidden' }}>
                   <Text style={styles.exportTitle}>Export</Text>
-                  <Text style={styles.exportSub}>{selected.filename}</Text>
+                  <Text style={styles.exportSub} numberOfLines={1} ellipsizeMode="middle">{selected.filename}</Text>
                 </View>
               </TouchableOpacity>
             </View>
@@ -342,7 +347,7 @@ const styles = StyleSheet.create({
   integrityValue: { fontSize: 11, fontWeight: '800', color: C.primary },
   integrityBar: { height: 3, backgroundColor: C.surfaceContainerHighest, borderRadius: R.full, overflow: 'hidden' },
   integrityFill: { height: '100%', width: '100%', backgroundColor: C.primary, borderRadius: R.full },
-  exportCard: { backgroundColor: C.surfaceBright, borderRadius: R.xl, padding: S.md, flexDirection: 'row', alignItems: 'center', gap: S.md },
+  exportCard: { backgroundColor: C.surfaceBright, borderRadius: R.xl, padding: S.md, flexDirection: 'row', alignItems: 'center', gap: S.md, flexShrink: 1, overflow: 'hidden' },
   exportIcon: { width: 44, height: 44, borderRadius: R.lg, backgroundColor: 'rgba(93,218,195,0.1)', alignItems: 'center', justifyContent: 'center' },
   exportTitle: { fontSize: 13, fontWeight: '700', color: C.text },
   exportSub: { fontSize: 10, color: C.textMuted, marginTop: 1 },

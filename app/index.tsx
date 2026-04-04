@@ -55,6 +55,9 @@ export default function DashboardScreen() {
     if (Platform.OS === 'android') {
       const status = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_SMS)
       setPermGranted(status)
+      if (!status) {
+        setShowDisclosure(true)
+      }
     }
   }
 
@@ -71,16 +74,18 @@ export default function DashboardScreen() {
   useFocusEffect(useCallback(() => { loadData() }, []))
 
   async function handlePermissionAccept() {
-    setShowDisclosure(false)
     if (Platform.OS === 'android') {
       const result = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.READ_SMS,
         PermissionsAndroid.PERMISSIONS.SEND_SMS,
         PermissionsAndroid.PERMISSIONS.RECEIVE_SMS,
+        PermissionsAndroid.PERMISSIONS.RECEIVE_MMS,
+        PermissionsAndroid.PERMISSIONS.RECEIVE_WAP_PUSH,
       ])
       const ok = Object.values(result).every(r => r === PermissionsAndroid.RESULTS.GRANTED)
       setPermGranted(ok)
     }
+    setShowDisclosure(false)
   }
 
   async function handleQuickBackup() {
@@ -182,11 +187,21 @@ export default function DashboardScreen() {
             <View>
               <Text style={styles.actionSub}>Immediate</Text>
               <Text style={styles.actionLabel}>{isRunning ? 'Backing up...' : 'Quick Backup'}</Text>
+              <Text style={{ fontSize: 9, color: 'rgba(0,56,47,0.7)', marginTop: 2 }}>fast, unencrypted local copy</Text>
             </View>
             {isRunning
               ? <ActivityIndicator color={C.onPrimary} size="small" />
               : <MaterialIcons name="bolt" size={28} color={C.onPrimary} />
             }
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.quickActionSecondary} onPress={() => router.push('/backup' as any)} activeOpacity={0.85}>
+            <View>
+              <Text style={styles.actionSubMuted}>Advanced</Text>
+              <Text style={styles.actionLabelDark}>Secure Vault Builder</Text>
+              <Text style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Create AES-256 encrypted backup</Text>
+            </View>
+            <MaterialIcons name="lock" size={26} color={C.primary} />
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.quickActionSecondary} onPress={() => router.push('/library' as any)} activeOpacity={0.85}>
@@ -225,8 +240,9 @@ export default function DashboardScreen() {
               <Text style={styles.intelStatValue}>{loading ? '—' : backups.length}</Text>
             </View>
             <View style={styles.intelStat}>
-              <Text style={styles.intelStatLabel}>Encrypted</Text>
+              <Text style={styles.intelStatLabel}>Encrypted Vaults</Text>
               <Text style={styles.intelStatValue}>{loading ? '—' : encryptedCount}</Text>
+              <Text style={{fontSize: 9, color: C.textMuted, opacity: 0.8, position: 'absolute', right: 0, top: 22}}>Quick backup is unencrypted</Text>
             </View>
           </View>
 

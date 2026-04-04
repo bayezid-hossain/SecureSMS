@@ -17,7 +17,7 @@ import {
 } from '../src/services/sms.service'
 import { useAppStore } from '../src/store/useAppStore'
 import { formatDate } from '../src/utils/date'
-import type { BackupFile, DiffResult, Message } from '../src/types/sms.types'
+import type { BackupFile, DiffResult, Message, MessageConflict } from '../src/types/sms.types'
 
 export default function RestoreScreen() {
   const router = useRouter()
@@ -83,9 +83,16 @@ export default function RestoreScreen() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Change via Dialog',
-            onPress: async () => {
+            onPress: () => {
               sentToSettingsRef.current = true
-              await requestDefaultSmsApp()   // fires ACTION_CHANGE_DEFAULT dialog
+              // Small delay lets the Alert fully dismiss before the system dialog appears
+              setTimeout(async () => {
+                const result = await requestDefaultSmsApp()
+                if (result) {
+                  setIsDefault(true)
+                  Alert.alert('Default App Set', 'SecureSMS is now your default SMS app. You can confirm the restore.')
+                }
+              }, 300)
             },
           },
           {
@@ -193,8 +200,8 @@ export default function RestoreScreen() {
               </Text>
             </View>
           ) : (
-            diff!.conflicts.map((msg, i) => (
-              <ConflictCard key={`${msg.id}-${i}`} message={msg} index={i} />
+            diff!.conflicts.map((conflict, i) => (
+              <ConflictCard key={`${conflict.local.id}-${i}`} conflict={conflict} index={i} />
             ))
           )}
         </View>
@@ -247,12 +254,12 @@ export default function RestoreScreen() {
   )
 }
 
-function ConflictCard({ message, index }: { message: Message; index: number }) {
-  const isEdited = message.type === 1 // inbound = might be locally-edited version
+function ConflictCard({ conflict, index }: { conflict: MessageConflict; index: number }) {
+  const isEdited = conflict.local.type === 1 // inbound = might be locally-edited version
   const label = isEdited ? 'Edited' : 'Conflict'
   const pillStyle = isEdited ? styles.editedPill : styles.removedPill
   const pillTxtStyle = isEdited ? styles.editedPillTxt : styles.removedPillTxt
-  const name = message.address ?? `Unknown #${index + 1}`
+  const name = conflict.local.address ?? `Unknown #${index + 1}`
   const shortName = name.length > 20 ? name.slice(0, 18) + '…' : name
 
   return (
@@ -270,8 +277,8 @@ function ConflictCard({ message, index }: { message: Message; index: number }) {
         <View style={[styles.diffSide, { backgroundColor: C.surfaceContainerLowest + '4D' }]}>
           <Text style={styles.diffSideLabel}>Local Device</Text>
           <View style={styles.localBubble}>
-            <Text style={styles.diffMsgText} numberOfLines={4}>{message.body}</Text>
-            <Text style={styles.diffTimestamp}>{formatDate(message.date)}</Text>
+            <Text style={styles.diffMsgText} numberOfLines={4}>{conflict.local.body}</Text>
+            <Text style={styles.diffTimestamp}>{formatDate(conflict.local.date)}</Text>
           </View>
         </View>
         <View style={[styles.diffSide, { backgroundColor: 'rgba(0,107,93,0.05)' }]}>
@@ -280,9 +287,9 @@ function ConflictCard({ message, index }: { message: Message; index: number }) {
             <MaterialIcons name="verified-user" size={14} color={C.primary} />
           </View>
           <View style={styles.vaultBubble}>
-            <Text style={styles.diffMsgText} numberOfLines={4}>{message.body}</Text>
+            <Text style={styles.diffMsgText} numberOfLines={4}>{conflict.backup.body}</Text>
             <Text style={[styles.diffTimestamp, { color: 'rgba(114,237,214,0.6)' }]}>
-              {formatDate(message.dateSent ?? message.date)}
+              {formatDate(conflict.backup.dateSent ?? conflict.backup.date)}
             </Text>
           </View>
         </View>

@@ -31,14 +31,17 @@ export function diffThreads(
   }
 
   const added: Message[] = []
-  const conflicts: Message[] = []
+  const conflicts: import('../types/sms.types').MessageConflict[] = []
 
   for (const msg of backupMessages) {
     const key = messageKey(msg)
     if (!deviceByKey.has(key)) {
       const partialKey = `${msg.address}|${msg.date}`
       if (deviceByPartialKey.has(partialKey)) {
-        conflicts.push(msg)
+        conflicts.push({
+          local: deviceByPartialKey.get(partialKey)!,
+          backup: msg,
+        })
       } else {
         added.push(msg)
       }

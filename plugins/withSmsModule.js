@@ -7,6 +7,8 @@ const path = require('path')
  *  1. Copies android-src-staging/**  →  android/app/src/main/java/com/securesms/
  *  2. Adds SmsPackage import + registration in MainApplication.kt
  *  3. Adds SmsReceiver + HeadlessSmsSendService to AndroidManifest.xml
+ *  4. Adds SENDTO intent filter on MainActivity
+ *  5. Adds all required SMS permissions
  *
  * `expo prebuild --clean` is fully safe — everything is restored automatically.
  */
@@ -87,25 +89,62 @@ const withSmsMainApplication = (config) => {
 
 const withSmsManifest = (config) => {
   return withAndroidManifest(config, (mod) => {
-    const app = mod.modResults.manifest.application[0]
+    const manifest = mod.modResults.manifest
+    const app = manifest.application[0]
 
-    // Ensure receiver array exists
+    // ── Ensure all required SMS permissions are present ──
+    if (!manifest['uses-permission']) manifest['uses-permission'] = []
+    const requiredPerms = [
+      'android.permission.READ_SMS',
+      'android.permission.SEND_SMS',
+      'android.permission.RECEIVE_SMS',
+      'android.permission.RECEIVE_MMS',
+      'android.permission.RECEIVE_WAP_PUSH',
+      'android.permission.WRITE_SMS',
+      'android.permission.RECEIVE_BOOT_COMPLETED',
+    ]
+    for (const perm of requiredPerms) {
+      const exists = manifest['uses-permission'].some(
+        (p) => p.$?.['android:name'] === perm
+      )
+      if (!exists) {
+        manifest['uses-permission'].push({ $: { 'android:name': perm } })
+        console.log(`[withSmsModule] Added permission: ${perm}`)
+      }
+    }
+
+    // Ensure receiver and service arrays exist
     if (!app.receiver) app.receiver = []
     if (!app.service) app.service = []
 
-    // SmsReceiver — required for default SMS app
+    // ── SmsReceiver — required for default SMS app ──
     const receiverName = '.SmsReceiver'
     if (!app.receiver.some((r) => r.$?.['android:name'] === receiverName)) {
       app.receiver.push({
         $: {
           'android:name': receiverName,
           'android:exported': 'true',
+          'android:permission': 'android.permission.BROADCAST_SMS',
         },
         'intent-filter': [
           {
             $: { 'android:priority': '1000' },
             action: [{ $: { 'android:name': 'android.provider.Telephony.SMS_DELIVER' } }],
           },
+        ],
+      })
+    }
+
+    // ── MmsReceiver — required for default SMS app ──
+    const mmsReceiverName = '.MmsReceiver'
+    if (!app.receiver.some((r) => r.$?.['android:name'] === mmsReceiverName)) {
+      app.receiver.push({
+        $: {
+          'android:name': mmsReceiverName,
+          'android:exported': 'true',
+          'android:permission': 'android.permission.BROADCAST_WAP_PUSH',
+        },
+        'intent-filter': [
           {
             $: { 'android:priority': '1000' },
             action: [{ $: { 'android:name': 'android.provider.Telephony.WAP_PUSH_DELIVER' } }],
@@ -115,7 +154,7 @@ const withSmsManifest = (config) => {
       })
     }
 
-    // HeadlessSmsSendService — required for default SMS app
+    // ── HeadlessSmsSendService — required for default SMS app ──
     const serviceName = '.HeadlessSmsSendService'
     if (!app.service.some((s) => s.$?.['android:name'] === serviceName)) {
       app.service.push({
@@ -137,10 +176,9 @@ const withSmsManifest = (config) => {
           },
         ],
       })
+    }
 
-    // SENDTO intent filter on MainActivity — the missing 4th requirement for
-    // Android to recognise this app as a valid default SMS app candidate.
-    // Without this, the app never appears in Settings > Default Apps > SMS.
+    // ── SENDTO intent filter on MainActivity ──
     const mainActivity = app.activity?.find(
       (a) => a.$?.['android:name'] === '.MainActivity'
     )
@@ -167,7 +205,6 @@ const withSmsManifest = (config) => {
           ],
         })
       }
-    }
     }
 
     return mod

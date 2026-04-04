@@ -14,11 +14,11 @@ export async function isDefaultSmsApp(): Promise<boolean> {
 }
 
 /**
- * Show the system "Change default SMS app" dialog (ACTION_CHANGE_DEFAULT).
- * Resolves immediately after launching — use AppState to detect when the
- * user returns and call isDefaultSmsApp() to check the result.
+ * Show the system "Change default SMS app" dialog.
+ * On Android 10+ uses RoleManager, on older versions uses ACTION_CHANGE_DEFAULT.
+ * Resolves with `true` if the app is now the default, `false` otherwise.
  */
-export async function requestDefaultSmsApp(): Promise<void> {
+export async function requestDefaultSmsApp(): Promise<boolean> {
   return SmsModule.requestDefaultSmsApp()
 }
 

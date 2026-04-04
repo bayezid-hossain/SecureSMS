@@ -18,6 +18,21 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
 
     override fun getName() = "SmsModule"
 
+    private val activityListener = object : BaseActivityEventListener() {
+        override fun onActivityResult(activity: android.app.Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+            if (requestCode == REQUEST_DEFAULT_SMS) {
+                val promise = defaultSmsPromise ?: return
+                defaultSmsPromise = null
+                // Check if we are now the default
+                promise.resolve(isDefault())
+            }
+        }
+    }
+
+    init {
+        reactContext.addActivityEventListener(activityListener)
+    }
+
     // ─── SMS Read ─────────────────────────────────────────────────────────────
 
     @ReactMethod
@@ -81,6 +96,12 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
 
     // ─── Default SMS App ──────────────────────────────────────────────────────
 
+    companion object {
+        private const val REQUEST_DEFAULT_SMS = 42001
+    }
+
+    private var defaultSmsPromise: Promise? = null
+
     @ReactMethod
     fun isDefaultSmsApp(promise: Promise) {
         promise.resolve(isDefault())
@@ -89,9 +110,9 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
     /**
      * Show the system "Change default SMS app" dialog.
      *
-     * Uses ACTION_CHANGE_DEFAULT on all API levels — this fires an immediate
-     * system dialog on every Android version. Resolves as soon as the intent
-     * is launched; the JS side uses AppState to re-check when the user returns.
+     * On Android 10+ uses RoleManager.createRequestRoleIntent(ROLE_SMS),
+     * which launches a proper system dialog via startActivityForResult.
+     * On older versions falls back to ACTION_CHANGE_DEFAULT.
      */
     @ReactMethod
     fun requestDefaultSmsApp(promise: Promise) {
@@ -99,17 +120,27 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
             promise.reject("NO_ACTIVITY", "No current activity")
             return
         }
+        defaultSmsPromise = promise
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val roleManager = reactContext.getSystemService(RoleManager::class.java)
+                if (roleManager.isRoleAvailable(RoleManager.ROLE_SMS)) {
+                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
+                    activity.startActivityForResult(intent, REQUEST_DEFAULT_SMS)
+                    return
+                }
+            }
+            // Fallback for pre-Q or if ROLE_SMS not available
             @Suppress("DEPRECATION")
             val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
                 putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, reactContext.packageName)
             }
-            activity.startActivity(intent)
-            promise.resolve(null)
+            activity.startActivityForResult(intent, REQUEST_DEFAULT_SMS)
         } catch (e: ActivityNotFoundException) {
-            // Fallback: open Default Apps settings page
+            defaultSmsPromise = null
             openSettingsFallback(activity, promise)
         } catch (e: Exception) {
+            defaultSmsPromise = null
             promise.reject("REQUEST_DEFAULT_ERROR", e.message, e)
         }
     }

@@ -21,10 +21,8 @@ export default function BackupScreen() {
   const [usePassword, setUsePassword] = useState(false)
   const [password, setPassword] = useState('')
   const { startBackup, refreshList, isRunning, error } = useBackup()
-  const { backupFetchedCount, backupList } = useAppStore((s) => ({
-    backupFetchedCount: s.backupFetchedCount,
-    backupList: s.backupList,
-  }))
+  const backupFetchedCount = useAppStore((s) => s.backupFetchedCount)
+  const backupList = useAppStore((s) => s.backupList)
 
   const textStyle = dark ? styles.textDark : styles.textLight
   const bg = dark ? styles.darkBg : styles.lightBg

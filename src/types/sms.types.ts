@@ -36,10 +36,15 @@ export interface BackupFile {
   index: Record<string, number> // threadId -> index in threads array
 }
 
+export interface MessageConflict {
+  local: Message
+  backup: Message
+}
+
 export interface DiffResult {
   added: Message[]
   removed: Message[]
-  conflicts: Message[]
+  conflicts: MessageConflict[]
 }
 
 export type EncryptionStatus = 'idle' | 'encrypting' | 'decrypting' | 'done' | 'error'
