@@ -3,6 +3,9 @@
 # dependencies
 node_modules/
 
+#connect config
+connect_config.txt
+
 # Expo
 .expo/
 dist/
