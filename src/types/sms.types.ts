@@ -28,6 +28,7 @@ export interface BackupMetadata {
   hash: string
   messageCount: number
   threadCount: number
+  latestMessageDate?: number
 }
 
 export interface BackupFile {

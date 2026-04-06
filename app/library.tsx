@@ -113,10 +113,11 @@ export default function LibraryScreen() {
       setSelectedBackup: s.setSelectedBackup,
     }))
   )
-  const { startBackup, isRunning } = useBackup()
+  const { startBackup, isRunning, checkRedundancy } = useBackup()
   const kbHeight = useKeyboardHeight()
 
   const { activeAccount, syncStatus, setSyncStatus, setLastSyncAt } = useDriveStore()
+  const [syncProgress, setSyncProgress] = useState(0)
 
   useEffect(() => {
     listBackups().then(setBackupList)
@@ -135,24 +136,58 @@ export default function LibraryScreen() {
       const driveFiles = await listDriveBackups(folderId, token)
       const driveFileNames = new Set(driveFiles.map(f => f.name))
 
+      const localToUpload = localBackups.filter(b => !driveFileNames.has(b.filename))
+      const localFileNames = new Set(localBackups.map(b => b.filename))
+      const driveToDownload = driveFiles.filter(df => 
+        df.name.endsWith('.json') && 
+        df.name !== 'custom_rules.json' && 
+        !localFileNames.has(df.name)
+      )
+
+      const totalOps = localToUpload.length + (driveToDownload.length > 0 ? driveToDownload.length : 0)
+      let completedOps = 0
+
+      setSyncProgress(0)
+
       // 1. Upload local files missing in Drive
       let uploaded = 0
-      for (const backup of localBackups) {
-        if (!driveFileNames.has(backup.filename)) {
-          const content = await FileSystem.readAsStringAsync(backup.filePath, { encoding: FileSystem.EncodingType.UTF8 })
-          await uploadFile(backup.filename, content, folderId, token)
-          uploaded++
-        }
+      for (const backup of localToUpload) {
+        const content = await FileSystem.readAsStringAsync(backup.filePath, { encoding: FileSystem.EncodingType.UTF8 })
+        await uploadFile(backup.filename, content, folderId, token)
+        uploaded++
+        completedOps++
+        if (totalOps > 0) setSyncProgress(Math.round((completedOps / totalOps) * 100))
       }
 
-      // 2. Download drive files missing locally
+      // 2. Detect drive files missing locally
       let downloaded = 0
-      const localFileNames = new Set(localBackups.map(b => b.filename))
-      for (const df of driveFiles) {
-        if (df.name.endsWith('.json') && df.name !== 'custom_rules.json' && !localFileNames.has(df.name)) {
-          const content = await downloadFile(df.id, token)
-          await FileSystem.writeAsStringAsync(BACKUP_DIR + df.name, content, { encoding: FileSystem.EncodingType.UTF8 })
-          downloaded++
+      if (driveToDownload.length > 0) {
+        setSyncStatus('idle') // Pause "Syncing..." state while waiting for user
+        const proceed = await new Promise<boolean>((resolve) => {
+          alert(
+            'Cloud Backups Found',
+            `We found ${driveToDownload.length} backup(s) on your Google Drive that aren't on this device:\n\n${driveToDownload.map(f => `• ${f.name}`).join('\n')}\n\nWould you like to download them?`,
+            [
+              { text: 'Skip', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Download All', onPress: () => resolve(true) }
+            ],
+            'info'
+          )
+        })
+
+        if (proceed) {
+          setSyncStatus('syncing')
+          for (const df of driveToDownload) {
+            const content = await downloadFile(df.id, token)
+            await FileSystem.writeAsStringAsync(BACKUP_DIR + df.name, content, { encoding: FileSystem.EncodingType.UTF8 })
+            downloaded++
+            completedOps++
+            if (totalOps > 0) setSyncProgress(Math.round((completedOps / totalOps) * 100))
+          }
+        } else {
+            // If skipped, we still mark the uploads as done if any
+            completedOps += driveToDownload.length
+            if (totalOps > 0) setSyncProgress(100)
         }
       }
 
@@ -272,7 +307,22 @@ export default function LibraryScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.backupNowBtn}
-              onPress={() => startBackup()}
+              onPress={async () => {
+                const { needed, reason } = await checkRedundancy()
+                if (!needed) {
+                  alert(
+                    'No New Messages',
+                    'Your latest backup already contains all current messages. Create another one anyway?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Backup Anyway', onPress: () => startBackup() }
+                    ],
+                    'info'
+                  )
+                } else {
+                  startBackup()
+                }
+              }}
               disabled={isRunning || shareAllLoading}
               activeOpacity={0.85}
             >
@@ -301,7 +351,16 @@ export default function LibraryScreen() {
               disabled={isRunning || shareAllLoading || syncStatus === 'syncing'}
               activeOpacity={0.85}
             >
-              <MaterialIcons name="cloud-sync" size={13} color={C.bg} style={{ marginRight: 4 }} />
+              {syncStatus === 'syncing' ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={C.bg} style={{ marginRight: 6 }} />
+                  <Text style={[styles.backupNowTxt, { color: C.bg, fontSize: 10, marginRight: 4 }]}>
+                    {syncProgress}%
+                  </Text>
+                </View>
+              ) : (
+                <MaterialIcons name="cloud-sync" size={13} color={C.bg} style={{ marginRight: 4 }} />
+              )}
               <Text style={[styles.backupNowTxt, { color: C.bg }]}>
                 {syncStatus === 'syncing' ? 'Syncing...' : 'Cloud Sync'}
               </Text>

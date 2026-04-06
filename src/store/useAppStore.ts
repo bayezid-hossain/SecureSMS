@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { BackupFile, EncryptionStatus, RestoreProgress } from '../types/sms.types'
 import { AppAlertProps } from '../components/AppAlert'
 import { BackupListItem } from '../services/backup.service'
@@ -30,6 +31,18 @@ interface AppState {
   alert: Partial<AppAlertProps> & { visible: boolean }
   showAlert: (props: Omit<AppAlertProps, 'visible'>) => void
   hideAlert: () => void
+
+  // Settings
+  autoBackupEnabled: boolean
+  setAutoBackupEnabled: (enabled: boolean) => Promise<void>
+  autoBackupIntervalDays: number
+  setAutoBackupIntervalDays: (days: number) => Promise<void>
+  lastAutoBackupAt: number | null
+  setLastAutoBackupAt: (ts: number) => Promise<void>
+  driveEnabled: boolean
+  setDriveEnabled: (enabled: boolean) => Promise<void>
+
+  loadSettings: () => Promise<void>
 
   // Reset
   reset: () => void
@@ -65,6 +78,43 @@ export const useAppStore = create<AppState>((set) => ({
   alert: { visible: false, title: '' },
   showAlert: (props) => set({ alert: { ...props, visible: true } }),
   hideAlert: () => set((state) => ({ alert: { ...state.alert, visible: false } })),
+
+  autoBackupEnabled: false,
+  setAutoBackupEnabled: async (enabled) => {
+    set({ autoBackupEnabled: enabled })
+    await AsyncStorage.setItem('pref_auto_backup', enabled ? '1' : '0')
+  },
+  autoBackupIntervalDays: 1,
+  setAutoBackupIntervalDays: async (days) => {
+    set({ autoBackupIntervalDays: days })
+    await AsyncStorage.setItem('pref_auto_interval', String(days))
+  },
+  lastAutoBackupAt: null,
+  setLastAutoBackupAt: async (ts) => {
+    set({ lastAutoBackupAt: ts })
+    await AsyncStorage.setItem('pref_last_auto_backup', String(ts))
+  },
+  driveEnabled: false,
+  setDriveEnabled: async (enabled) => {
+    set({ driveEnabled: enabled })
+    await AsyncStorage.setItem('pref_drive_enabled', enabled ? '1' : '0')
+  },
+
+  loadSettings: async () => {
+    try {
+      const auto = await AsyncStorage.getItem('pref_auto_backup')
+      const interval = await AsyncStorage.getItem('pref_auto_interval')
+      const last = await AsyncStorage.getItem('pref_last_auto_backup')
+      const drive = await AsyncStorage.getItem('pref_drive_enabled')
+
+      set({
+        autoBackupEnabled: auto === '1',
+        autoBackupIntervalDays: interval ? parseInt(interval, 10) : 1,
+        lastAutoBackupAt: last ? parseInt(last, 10) : null,
+        driveEnabled: drive === '1',
+      })
+    } catch { /* ignore */ }
+  },
 
   reset: () =>
     set({

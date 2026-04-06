@@ -5,7 +5,7 @@ import { router } from 'expo-router'
 import Constants from 'expo-constants'
 import * as FileSystem from 'expo-file-system/legacy'
 import * as LocalAuth from 'expo-local-authentication'
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Image,
@@ -15,10 +15,12 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
 } from 'react-native'
+import { useKeyboardHeight } from '../src/hooks/useKeyboardHeight'
 import { BIOMETRIC_KEY } from './_layout'
 import { AppHeader } from '../src/components/AppHeader'
 import { BottomNav } from '../src/components/BottomNav'
@@ -29,6 +31,7 @@ import {
   configureDriveSignIn, signIn, signOut, getAccessToken,
   getOrCreateFolder, uploadFile, listDriveBackups,
 } from '../src/services/drive.service'
+import { registerAutoBackupTask, unregisterAutoBackupTask } from '../src/services/task.service'
 import { zipAndShareAll } from '../src/services/share.service'
 import { useAppStore } from '../src/store/useAppStore'
 import { useDriveStore } from '../src/store/drive.store'
@@ -67,17 +70,20 @@ function SettingRow({ icon, iconColor, label, sub, right, onPress, destructive }
 function BottomSheet({
   visible, onClose, children,
 }: { visible: boolean; onClose: () => void; children: React.ReactNode }) {
+  const kbHeight = useKeyboardHeight()
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View style={styles.scrim} />
-      </TouchableWithoutFeedback>
-      <View style={styles.sheet}>
-        <View style={styles.sheetHandle} />
-        <TouchableOpacity style={styles.sheetCloseBtn} onPress={onClose}>
-          <MaterialIcons name="close" size={18} color={C.textMuted} />
-        </TouchableOpacity>
-        {children}
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
+      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+        <TouchableWithoutFeedback onPress={onClose}>
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.6)' }]} />
+        </TouchableWithoutFeedback>
+        <View style={[styles.sheet, { paddingBottom: kbHeight > 0 ? kbHeight + 16 : 40 }]}>
+          <View style={styles.sheetHandle} />
+          <TouchableOpacity style={styles.sheetCloseBtn} onPress={onClose}>
+            <MaterialIcons name="close" size={18} color={C.textMuted} />
+          </TouchableOpacity>
+          {children}
+        </View>
       </View>
     </Modal>
   )
@@ -89,58 +95,105 @@ export default function SettingsScreen() {
   const setBackupList = useAppStore(s => s.setBackupList)
 
   const { activeAccount, syncStatus, loadStore, setActiveAccount, setSyncStatus, setLastSyncAt } = useDriveStore()
+  const { 
+    autoBackupEnabled, setAutoBackupEnabled, 
+    autoBackupIntervalDays, setAutoBackupIntervalDays,
+    driveEnabled, setDriveEnabled
+  } = useAppStore()
 
-  const [autoBackup, setAutoBackupState] = useState(false)
   const [wifiOnly, setWifiOnlyState] = useState(true)
-  const [driveEnabled, setDriveEnabledState] = useState(false)
   const [biometricEnabled, setBiometricEnabled] = useState(false)
   const [backupCount, setBackupCount] = useState<number | null>(null)
   const [backupSizeBytes, setBackupSizeBytes] = useState<number | null>(null)
   const [loadingPrefs, setLoadingPrefs] = useState(true)
   const [driveSheetVisible, setDriveSheetVisible] = useState(false)
+  const [intervalSheetVisible, setIntervalSheetVisible] = useState(false)
+  const [tempInterval, setTempInterval] = useState(String(autoBackupIntervalDays))
   const [signingIn, setSigningIn] = useState(false)
   const [sharing, setSharing] = useState(false)
+  // Tracks whether the interval sheet was opened to enable auto-backup for the first time
+  const pendingEnableRef = useRef(false)
 
   useEffect(() => {
     if (WEB_CLIENT_ID) configureDriveSignIn(WEB_CLIENT_ID)
     loadStore()
+    loadPrefs()
+    refreshStats()
   }, [])
 
-  useFocusEffect(useCallback(() => {
-    ;(async () => {
-      try {
-        const [ab, wo, de, bio, list] = await Promise.all([
-          AsyncStorage.getItem(KEYS.autoBackup),
-          AsyncStorage.getItem(KEYS.wifiOnly),
-          AsyncStorage.getItem(KEYS.driveEnabled),
-          AsyncStorage.getItem(BIOMETRIC_KEY),
-          listBackups(),
-        ])
-        if (ab !== null) setAutoBackupState(ab === '1')
-        if (wo !== null) setWifiOnlyState(wo === '1')
-        if (de !== null) setDriveEnabledState(de === '1')
-        setBiometricEnabled(bio === '1')
-        setBackupCount(list.length)
-        setBackupSizeBytes(list.reduce((acc, b) => acc + b.size, 0))
-      } catch { /* ignore */ } finally {
-        setLoadingPrefs(false)
-      }
-    })()
-  }, []))
+  async function loadPrefs() {
+    try {
+      const wifi = await AsyncStorage.getItem(KEYS.wifiOnly)
+      if (wifi) setWifiOnlyState(wifi === '1')
 
-  async function setPref(key: string, value: boolean) {
-    await AsyncStorage.setItem(key, value ? '1' : '0')
+      const bio = await AsyncStorage.getItem(BIOMETRIC_KEY)
+      setBiometricEnabled(bio === '1')
+    } catch { /* ignore */ } finally {
+      setLoadingPrefs(false)
+    }
   }
 
-  function setAutoBackup(v: boolean) { setAutoBackupState(v); setPref(KEYS.autoBackup, v) }
-  function setWifiOnly(v: boolean) { setWifiOnlyState(v); setPref(KEYS.wifiOnly, v) }
+  async function refreshStats() {
+    const list = await listBackups()
+    setBackupCount(list.length)
+    setBackupSizeBytes(list.reduce((acc, b) => acc + b.size, 0))
+  }
 
-  function setDriveEnabled(v: boolean) {
+  const toggleAutoBackup = async (val: boolean) => {
+    if (val) {
+      // Show the interval input first; task is registered only when the user confirms
+      pendingEnableRef.current = true
+      setTempInterval(String(autoBackupIntervalDays))
+      setIntervalSheetVisible(true)
+    } else {
+      await setAutoBackupEnabled(false)
+      try {
+        await unregisterAutoBackupTask()
+      } catch { /* ignore */ }
+    }
+  }
+
+  const setWifiOnly = async (val: boolean) => {
+    setWifiOnlyState(val)
+    await AsyncStorage.setItem(KEYS.wifiOnly, val ? '1' : '0')
+  }
+
+  const handleUpdateInterval = async () => {
+    const days = parseInt(tempInterval, 10)
+    if (isNaN(days) || days < 1) {
+      alert('Invalid Interval', 'Please enter a number of days (at least 1).', [{ text: 'OK' }], 'warning')
+      return
+    }
+    await setAutoBackupIntervalDays(days)
+    const enabling = pendingEnableRef.current
+    if (enabling) {
+      await setAutoBackupEnabled(true)
+      pendingEnableRef.current = false
+    }
+    // Register (or re-register with new interval) when enabled
+    if (enabling || autoBackupEnabled) {
+      try {
+        await registerAutoBackupTask()
+      } catch (e: any) {
+        alert('Task Error', e.message ?? 'Failed to schedule background task.', [{ text: 'OK' }], 'error')
+      }
+    }
+    setIntervalSheetVisible(false)
+  }
+
+  const handleIntervalSheetClose = () => {
+    // If user dismisses without saving while we were waiting to enable, cancel the enable
+    if (pendingEnableRef.current) {
+      pendingEnableRef.current = false
+    }
+    setIntervalSheetVisible(false)
+  }
+
+  function setDriveEnabledState(v: boolean) {
     if (v) {
       setDriveSheetVisible(true)
     } else {
-      setDriveEnabledState(false)
-      setPref(KEYS.driveEnabled, false)
+      setDriveEnabled(false)
     }
   }
 
@@ -177,7 +230,7 @@ export default function SettingsScreen() {
           connectedAt: Date.now(),
         })
         setDriveEnabledState(true)
-        setPref(KEYS.driveEnabled, true)
+        await setDriveEnabled(true)
         const token = await getAccessToken()
         const folderId = await getOrCreateFolder(token)
         const driveFiles = await listDriveBackups(folderId, token)
@@ -207,7 +260,7 @@ export default function SettingsScreen() {
           await setActiveAccount(null)
           await signOut()
           setDriveEnabledState(false)
-          setPref(KEYS.driveEnabled, false)
+          await setDriveEnabled(false)
           handleGoogleSignIn()
         },
       },
@@ -216,7 +269,7 @@ export default function SettingsScreen() {
 
   async function handleSyncToDrive() {
     if (!activeAccount) {
-      alert('No Account', 'Connect a Google account first.', [{ text: 'OK' }], 'warning')
+      await handleGoogleSignIn()
       return
     }
     setSyncStatus('syncing')
@@ -408,13 +461,27 @@ export default function SettingsScreen() {
             <SettingRow
               icon="backup" iconColor={C.primary}
               label="Auto Backup"
-              sub={autoBackup ? 'Will back up when conditions are met' : 'Manual backup only'}
+              sub={autoBackupEnabled ? 'Will back up when conditions are met' : 'Manual backup only'}
               right={
-                <Switch value={autoBackup} onValueChange={setAutoBackup}
+                <Switch value={autoBackupEnabled} onValueChange={toggleAutoBackup}
                   trackColor={{ false: C.surfaceContainerHighest, true: C.primaryContainer }}
-                  thumbColor={autoBackup ? C.primary : '#666'} />
+                  thumbColor={autoBackupEnabled ? C.primary : '#666'} />
               }
             />
+            {autoBackupEnabled && (
+              <>
+                <View style={styles.rowDivider} />
+                <SettingRow
+                  icon="schedule" iconColor={C.primary}
+                  label="Backup Interval"
+                  sub={`Run every ${autoBackupIntervalDays} day${autoBackupIntervalDays !== 1 ? 's' : ''}`}
+                  onPress={() => {
+                    setTempInterval(String(autoBackupIntervalDays))
+                    setIntervalSheetVisible(true)
+                  }}
+                />
+              </>
+            )}
             <View style={styles.rowDivider} />
             <SettingRow
               icon="wifi" iconColor={C.secondary}
@@ -432,7 +499,7 @@ export default function SettingsScreen() {
               label="Google Drive Sync"
               sub={driveEnabled ? 'Uploading AES-256 encrypted backups' : 'Disabled — local storage only'}
               right={
-                <Switch value={driveEnabled} onValueChange={setDriveEnabled}
+                <Switch value={driveEnabled} onValueChange={setDriveEnabledState}
                   trackColor={{ false: C.surfaceContainerHighest, true: C.primaryContainer }}
                   thumbColor={driveEnabled ? C.primary : '#666'} />
               }
@@ -490,11 +557,17 @@ export default function SettingsScreen() {
             <SettingRow
               icon="cloud-upload" iconColor={C.tertiary}
               label="Sync to Google Drive"
-              sub={syncStatus === 'syncing' ? 'Uploading…' : (activeAccount ? `Connected to ${activeAccount.email}` : 'Not connected')}
+              sub={
+                syncStatus === 'syncing' ? 'Uploading…'
+                : activeAccount ? `Connected to ${activeAccount.email}`
+                : 'Tap to connect a Google account'
+              }
               onPress={handleSyncToDrive}
               right={
                 syncStatus === 'syncing'
                   ? <ActivityIndicator color={C.tertiary} size="small" />
+                  : !activeAccount
+                  ? <Text style={[styles.valueChip, { color: C.tertiary }]}>Connect</Text>
                   : <MaterialIcons name="chevron-right" size={18} color={C.textFaint} />
               }
             />
@@ -548,6 +621,32 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
+      <BottomSheet visible={intervalSheetVisible} onClose={handleIntervalSheetClose}>
+        <View style={{ padding: S.lg, gap: S.md }}>
+          <View style={styles.sheetIconWrap}>
+            <MaterialIcons name="schedule" size={28} color={C.primary} />
+          </View>
+          <Text style={styles.sheetTitle}>Backup Frequency</Text>
+          <Text style={styles.sheetSub}>How often should we scan for new messages and create a local backup?</Text>
+          
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: C.surfaceContainerHigh, borderRadius: R.lg, paddingHorizontal: S.md, marginVertical: S.md }}>
+            <Text style={{ fontSize: 15, fontWeight: '700', color: C.text, marginRight: 8 }}>Every</Text>
+            <TextInput
+              style={{ flex: 1, paddingVertical: 14, color: C.text, fontSize: 16, fontWeight: '800' }}
+              value={tempInterval}
+              onChangeText={setTempInterval}
+              keyboardType="number-pad"
+              autoFocus
+            />
+            <Text style={{ fontSize: 15, fontWeight: '700', color: C.textMuted }}>days</Text>
+          </View>
+
+          <TouchableOpacity style={styles.sheetPrimaryBtn} onPress={handleUpdateInterval}>
+            <Text style={styles.sheetPrimaryBtnTxt}>Save Preference</Text>
+          </TouchableOpacity>
+        </View>
+      </BottomSheet>
+
       <BottomNav />
     </View>
   )
@@ -599,7 +698,7 @@ const styles = StyleSheet.create({
   sheet: {
     backgroundColor: C.surfaceContainerLowest,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: S.xl, paddingTop: S.md, paddingBottom: 40,
+    paddingHorizontal: S.xl, paddingTop: S.md,
     borderTopWidth: 1, borderColor: 'rgba(62,73,70,0.15)',
   },
   sheetHandle: {

@@ -18,7 +18,7 @@ export function SecureBackupModal({
   onClose: () => void
 }) {
   const { alert } = useAlert()
-  const { startBackup, isRunning } = useBackup()
+  const { startBackup, isRunning, checkRedundancy } = useBackup()
   const backupFetchedCount = useAppStore((s) => s.backupFetchedCount)
   const backupTotalCount = useAppStore((s) => s.backupTotalCount)
   const encryptionStatus = useAppStore((s) => s.encryptionStatus)
@@ -34,6 +34,22 @@ export function SecureBackupModal({
     if (password !== confirm) {
       alert('Mismatch', 'Passwords do not match.', [{ text: 'OK' }], 'error')
       return
+    }
+
+    const { needed, reason } = await checkRedundancy()
+    if (!needed) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        alert(
+          'No New Messages',
+          'Your latest backup already contains all current messages. Create another one anyway?',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Backup Anyway', onPress: () => resolve(true) }
+          ],
+          'info'
+        )
+      })
+      if (!proceed) return
     }
 
     try {

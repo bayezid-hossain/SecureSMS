@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { createBackup, listBackups } from '../services/backup.service'
+import { createBackup, listBackups, checkRedundancy } from '../services/backup.service'
 import { useAppStore } from '../store/useAppStore'
 
 export function useBackup() {
@@ -42,5 +42,5 @@ export function useBackup() {
     setBackupList(list)
   }, [setBackupList])
 
-  return { startBackup, refreshList, isRunning, error }
+  return { startBackup, refreshList, isRunning, error, checkRedundancy }
 }

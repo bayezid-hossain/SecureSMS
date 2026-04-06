@@ -41,6 +41,15 @@ export async function getSmsCount(): Promise<number> {
   return await SmsModule.getSmsCount()
 }
 
+/**
+ * Get the timestamp of the very latest message on the device.
+ * Useful for redundancy checks before backing up.
+ */
+export async function getLatestMessageDate(): Promise<number> {
+  const latestBatch = await readSmsPage(0, 1)
+  return latestBatch[0]?.date ?? 0
+}
+
 export async function readAllSms(
   onProgress?: (fetched: number, total: number) => void
 ): Promise<Message[]> {

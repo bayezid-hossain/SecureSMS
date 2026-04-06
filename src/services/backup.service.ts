@@ -1,8 +1,10 @@
 import * as FileSystem from 'expo-file-system/legacy'
 import * as Device from 'expo-device'
-import { BackupFile, BackupMetadata, Thread } from '../types/sms.types'
+import { useAppStore } from '../store/useAppStore'
+import { useDriveStore } from '../store/drive.store'
+import { BackupFile, BackupMetadata, Thread, Message } from '../types/sms.types'
 import { hashBackupPayload } from '../utils/hash'
-import { readAllSms, groupIntoThreads } from './sms.service'
+import { readAllSms, groupIntoThreads, getLatestMessageDate, getSmsCount } from './sms.service'
 import { encrypt, EncryptedPayload } from './encryption.service'
 
 export const BACKUP_DIR = `${FileSystem.documentDirectory}backups/`
@@ -46,6 +48,7 @@ export async function createBackup(
     hash,
     messageCount: messages.length,
     threadCount: threads.length,
+    latestMessageDate: messages.length > 0 ? Math.max(...messages.map(m => m.date)) : 0,
   }
 
   const backup: BackupFile = { metadata, threads, index }
@@ -69,6 +72,26 @@ export async function createBackup(
   await FileSystem.writeAsStringAsync(filePath, content, {
     encoding: FileSystem.EncodingType.UTF8,
   })
+
+  // 7. Auto Upload if configured
+  const driveEnabled = useAppStore.getState().driveEnabled
+  const activeAccount = useDriveStore.getState().activeAccount
+
+  if (driveEnabled && activeAccount) {
+    try {
+      const { signInSilently, getAccessToken, getOrCreateFolder, uploadFile } = await import('./drive.service')
+      const user = await signInSilently()
+      if (user) {
+        const token = await getAccessToken()
+        const folderId = await getOrCreateFolder(token)
+        await uploadFile(filename, content, folderId, token)
+        useDriveStore.getState().setLastSyncAt(Date.now())
+      }
+    } catch (e) {
+      console.error('Auto upload failed:', e)
+      // We don't throw here to avoid failing the local backup if only upload failed
+    }
+  }
 
   return filePath
 }
@@ -128,4 +151,48 @@ export async function loadBackup(filePath: string, password?: string): Promise<B
 
 export async function deleteBackup(filePath: string): Promise<void> {
   await FileSystem.deleteAsync(filePath, { idempotent: true })
+}
+
+/**
+ * Returns the metadata of the most recent local backup by reading just the meta section.
+ */
+export async function getLatestBackupMetadata(): Promise<BackupMetadata | null> {
+  const list = await listBackups()
+  if (list.length === 0) return null
+
+  const first = list[0]
+  try {
+    const raw = await FileSystem.readAsStringAsync(first.filePath, { encoding: FileSystem.EncodingType.UTF8 })
+    const json = JSON.parse(raw)
+    // If encrypted, we can't easily read metadata without password unless we change format.
+    // For now, if encrypted, we assume we need a full read or skip optimization.
+    if (first.encrypted) return null 
+    return (json as BackupFile).metadata
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Checks if a new backup is actually needed by comparing device stats 
+ * with the latest backup's metadata.
+ */
+export async function checkRedundancy(): Promise<{ needed: boolean; reason?: string }> {
+  const latestMeta = await getLatestBackupMetadata()
+  if (!latestMeta) return { needed: true, reason: 'No previous unencrypted backup found' }
+
+  const [currentCount, currentLatestDate] = await Promise.all([
+    getSmsCount(),
+    getLatestMessageDate()
+  ])
+
+  if (currentCount > latestMeta.messageCount) {
+    return { needed: true, reason: 'New messages detected' }
+  }
+
+  if (currentLatestDate > (latestMeta.latestMessageDate ?? 0)) {
+      return { needed: true, reason: 'Recent messages updated' }
+  }
+
+  return { needed: false, reason: 'No new messages since last backup' }
 }

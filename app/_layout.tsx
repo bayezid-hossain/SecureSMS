@@ -9,6 +9,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons'
 import { AppAlert } from '../src/components/AppAlert'
 import { useAppStore } from '../src/store/useAppStore'
+import { registerAutoBackupTask } from '../src/services/task.service'
 import { C, R, S } from '../src/theme'
 
 export const BIOMETRIC_KEY = 'pref_biometric_lock'
@@ -57,6 +58,8 @@ const lock = StyleSheet.create({
 export default function RootLayout() {
   const alert = useAppStore((s) => s.alert)
   const hideAlert = useAppStore((s) => s.hideAlert)
+  const loadSettings = useAppStore((s) => s.loadSettings)
+  const autoBackupEnabled = useAppStore((s) => s.autoBackupEnabled)
 
   const [locked, setLocked] = useState(false)
   const enabledRef = useRef(false)
@@ -77,6 +80,7 @@ export default function RootLayout() {
 
   useEffect(() => {
     async function init() {
+      await loadSettings()
       const val = await AsyncStorage.getItem(BIOMETRIC_KEY)
       const enabled = val === '1'
       enabledRef.current = enabled
@@ -86,6 +90,10 @@ export default function RootLayout() {
       }
     }
     init()
+
+    if (autoBackupEnabled) {
+      registerAutoBackupTask().catch(e => console.error('Failed to register auto-backup:', e))
+    }
 
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
       if (state === 'background' || state === 'inactive') {
