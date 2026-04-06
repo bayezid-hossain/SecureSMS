@@ -67,6 +67,26 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun getSmsCount(promise: Promise) {
+        try {
+            val cursor: Cursor? = reactContext.contentResolver.query(
+                Uri.parse("content://sms"),
+                arrayOf("count(_id) AS count"),
+                null, null, null
+            )
+            var count = 0
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    count = it.getInt(0)
+                }
+            }
+            promise.resolve(count)
+        } catch (e: Exception) {
+            promise.reject("COUNT_SMS_ERROR", e.message, e)
+        }
+    }
+
     // ─── SMS Write ────────────────────────────────────────────────────────────
 
     @ReactMethod
@@ -91,6 +111,23 @@ class SmsModule(private val reactContext: ReactApplicationContext) :
             else promise.reject("INSERT_FAILED", "Insert returned null URI")
         } catch (e: Exception) {
             promise.reject("INSERT_SMS_ERROR", e.message, e)
+        }
+    }
+
+    // ─── SMS Delete ───────────────────────────────────────────────────────────
+
+    @ReactMethod
+    fun deleteSms(id: String, promise: Promise) {
+        try {
+            if (!isDefault()) {
+                promise.reject("NOT_DEFAULT", "App is not the default SMS handler")
+                return
+            }
+            val uri = Uri.parse("content://sms/$id")
+            val count = reactContext.contentResolver.delete(uri, null, null)
+            promise.resolve(count > 0)
+        } catch (e: Exception) {
+            promise.reject("DELETE_SMS_ERROR", e.message, e)
         }
     }
 

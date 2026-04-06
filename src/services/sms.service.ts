@@ -37,6 +37,10 @@ export async function readSmsPage(offset: number, limit: number): Promise<Messag
   return JSON.parse(json) as Message[]
 }
 
+export async function getSmsCount(): Promise<number> {
+  return await SmsModule.getSmsCount()
+}
+
 export async function readAllSms(
   onProgress?: (fetched: number, total: number) => void
 ): Promise<Message[]> {
@@ -88,6 +92,13 @@ export async function insertSms(message: Message): Promise<void> {
     throw new Error('App must be default SMS handler to restore messages')
   }
   await SmsModule.insertSms(JSON.stringify(message))
+}
+
+export async function deleteSmsById(id: string): Promise<boolean> {
+  if (!(await isDefaultSmsApp())) {
+    throw new Error('App must be the default SMS handler to delete messages')
+  }
+  return SmsModule.deleteSms(id)
 }
 
 export async function insertSmsBatch(

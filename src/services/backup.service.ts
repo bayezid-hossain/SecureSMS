@@ -5,7 +5,7 @@ import { hashBackupPayload } from '../utils/hash'
 import { readAllSms, groupIntoThreads } from './sms.service'
 import { encrypt, EncryptedPayload } from './encryption.service'
 
-const BACKUP_DIR = `${FileSystem.documentDirectory}backups/`
+export const BACKUP_DIR = `${FileSystem.documentDirectory}backups/`
 const BACKUP_VERSION = '1.0.0'
 
 export async function ensureBackupDir(): Promise<void> {
@@ -18,7 +18,7 @@ export async function ensureBackupDir(): Promise<void> {
 export async function createBackup(
   options: {
     password?: string
-    onProgress?: (fetched: number) => void
+    onProgress?: (fetched: number, total: number) => void
   } = {}
 ): Promise<string> {
   await ensureBackupDir()
@@ -116,7 +116,11 @@ export async function loadBackup(filePath: string, password?: string): Promise<B
     const { decrypt } = await import('./encryption.service')
     const payload = JSON.parse(raw) as EncryptedPayload
     const json = await decrypt(payload, password)
-    return JSON.parse(json) as BackupFile
+    try {
+      return JSON.parse(json) as BackupFile
+    } catch {
+      throw new Error('Incorrect password. Please try again.')
+    }
   }
 
   return JSON.parse(raw) as BackupFile

@@ -9,7 +9,9 @@ import { useFocusEffect } from '@react-navigation/native'
 import { AppHeader } from '../src/components/AppHeader'
 import { BottomNav } from '../src/components/BottomNav'
 import { SecurityPulse } from '../src/components/SecurityPulse'
+import { SecureBackupModal } from '../src/components/SecureBackupModal'
 import { PermissionDisclosureModal } from '../src/components/PermissionDisclosureModal'
+import { useAlert } from '../src/hooks/useAlert'
 import { C, R, S } from '../src/theme'
 import { listBackups, BackupListItem } from '../src/services/backup.service'
 import { useBackup } from '../src/hooks/useBackup'
@@ -45,8 +47,10 @@ function healthLabel(score: number): string {
 
 export default function DashboardScreen() {
   const router = useRouter()
+  const { alert } = useAlert()
   const { startBackup, isRunning } = useBackup()
   const [showDisclosure, setShowDisclosure] = useState(false)
+  const [secureModalVisible, setSecureModalVisible] = useState(false)
   const [permGranted, setPermGranted] = useState(false)
   const [backups, setBackups] = useState<BackupListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -84,13 +88,40 @@ export default function DashboardScreen() {
       ])
       const ok = Object.values(result).every(r => r === PermissionsAndroid.RESULTS.GRANTED)
       setPermGranted(ok)
+
+      if (!ok) {
+        // Android 13+ "restricted settings" blocks SMS permissions for sideloaded APKs.
+        // Guide the user through the manual enable flow.
+        const anyDenied = Object.values(result).some(
+          r => r === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN || r === PermissionsAndroid.RESULTS.DENIED
+        )
+        if (anyDenied) {
+          alert(
+            'Permissions Required',
+            'SMS permissions were not granted.\n\n' +
+            'If you installed this app outside the Play Store, Android may block SMS permissions as a security measure.\n\n' +
+            'To fix this:\n' +
+            '1. Open Settings → Apps → SecureSMS\n' +
+            '2. Tap the ⋮ (three-dot) menu in the top-right\n' +
+            '3. Tap "Allow restricted settings"\n' +
+            '4. Return here and grant permissions',
+            [{ text: 'OK' }],
+            'security'
+          )
+        }
+      }
     }
     setShowDisclosure(false)
   }
 
   async function handleQuickBackup() {
-    await startBackup()
-    loadData()
+    try {
+      await startBackup()
+      alert('Success', 'Local backup created successfully.', [{ text: 'OK' }], 'check-circle')
+      loadData()
+    } catch (e: any) {
+      alert('Error', e.message, [{ text: 'OK', style: 'cancel' }], 'error')
+    }
   }
 
   const totalBytes = backups.reduce((acc, b) => acc + b.size, 0)
@@ -108,12 +139,17 @@ export default function DashboardScreen() {
         onAccept={handlePermissionAccept}
         onDecline={() => setShowDisclosure(false)}
       />
+      
+      <SecureBackupModal
+        visible={secureModalVisible}
+        onClose={() => setSecureModalVisible(false)}
+      />
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         {/* Hero */}
         <View style={styles.heroRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.heroTitle}>Vault Dashboard</Text>
+            <Text style={styles.heroTitle}>Backup Dashboard</Text>
             <Text style={styles.heroSub}>
               Your digital communications are secured with{' '}
               <Text style={{ color: C.primary }}>Military-Grade AES-256 Encryption</Text>.{' '}
@@ -150,7 +186,7 @@ export default function DashboardScreen() {
           </View>
 
           <View style={[styles.storageCard, { flex: 1 }]}>
-            <Text style={styles.cardLabel}>Storage Vault</Text>
+            <Text style={styles.cardLabel}>Storage Archive</Text>
             {loading ? (
               <ActivityIndicator color={C.primary} style={{ marginVertical: 12 }} />
             ) : (
@@ -195,10 +231,10 @@ export default function DashboardScreen() {
             }
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.quickActionSecondary} onPress={() => router.push('/backup' as any)} activeOpacity={0.85}>
+          <TouchableOpacity style={styles.quickActionSecondary} onPress={() => setSecureModalVisible(true)} activeOpacity={0.85}>
             <View>
               <Text style={styles.actionSubMuted}>Advanced</Text>
-              <Text style={styles.actionLabelDark}>Secure Vault Builder</Text>
+              <Text style={styles.actionLabelDark}>Secure Backup</Text>
               <Text style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Create AES-256 encrypted backup</Text>
             </View>
             <MaterialIcons name="lock" size={26} color={C.primary} />
@@ -240,7 +276,7 @@ export default function DashboardScreen() {
               <Text style={styles.intelStatValue}>{loading ? '—' : backups.length}</Text>
             </View>
             <View style={styles.intelStat}>
-              <Text style={styles.intelStatLabel}>Encrypted Vaults</Text>
+              <Text style={styles.intelStatLabel}>Secure Backups</Text>
               <Text style={styles.intelStatValue}>{loading ? '—' : encryptedCount}</Text>
               <Text style={{fontSize: 9, color: C.textMuted, opacity: 0.8, position: 'absolute', right: 0, top: 22}}>Quick backup is unencrypted</Text>
             </View>

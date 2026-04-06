@@ -34,3 +34,35 @@ export function filterCleanupCandidates(
 ): Message[] {
   return messages.filter((m) => shouldCleanup(m, options.otpDays, options.promoDays))
 }
+
+export type RuleConditionType = 'sender_contains' | 'body_contains' | 'sender_equals'
+
+export interface CustomRule {
+  id: string
+  name: string
+  type: RuleConditionType
+  value: string
+  enabled: boolean
+}
+
+export function matchesCustomRule(message: Message, rules: CustomRule[]): boolean {
+  if (!rules || rules.length === 0) return false
+  
+  for (const rule of rules) {
+    if (!rule.enabled || !rule.value) continue
+    
+    const value = rule.value.toLowerCase()
+    
+    if (rule.type === 'sender_contains' && message.address.toLowerCase().includes(value)) {
+      return true
+    }
+    if (rule.type === 'sender_equals' && message.address.toLowerCase() === value) {
+      return true
+    }
+    if (rule.type === 'body_contains' && message.body.toLowerCase().includes(value)) {
+      return true
+    }
+  }
+  
+  return false
+}

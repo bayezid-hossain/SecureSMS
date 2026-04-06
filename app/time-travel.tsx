@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native'
 import { useRouter } from 'expo-router'
 import React, { useCallback, useState } from 'react'
 import {
-  ActivityIndicator, Alert,
+  ActivityIndicator,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -16,6 +16,7 @@ import { BottomNav } from '../src/components/BottomNav'
 import { SecurityPulse } from '../src/components/SecurityPulse'
 import { BackupListItem, listBackups } from '../src/services/backup.service'
 import { C, R, S } from '../src/theme'
+import { useAlert } from '../src/hooks/useAlert'
 import { formatDate } from '../src/utils/date'
 
 function formatBytes(bytes: number): string {
@@ -36,6 +37,7 @@ function backupLabel(b: BackupListItem): string {
 
 export default function TimeTravelScreen() {
   const router = useRouter()
+  const { alert } = useAlert()
   const [backups, setBackups] = useState<BackupListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedIdx, setSelectedIdx] = useState(0)
@@ -205,7 +207,7 @@ export default function TimeTravelScreen() {
               <TouchableOpacity
                 style={styles.exportCard}
                 activeOpacity={0.85}
-                onPress={() => Alert.alert('Export', `File path:\n${selected.filePath}`)}
+                onPress={() => alert('Export', `File path:\n${selected.filePath}`, [{ text: 'OK' }], 'info')}
               >
                 <View style={styles.exportIcon}>
                   <MaterialIcons name="share" size={22} color={C.primary} />
@@ -271,11 +273,11 @@ export default function TimeTravelScreen() {
                         </Text>
                       </View>
                       <TouchableOpacity onPress={() => {
-                        Alert.alert(snap.filename, undefined, [
+                        alert(snap.filename, undefined, [
                           { text: 'Restore', onPress: () => router.push({ pathname: '/restore' as any, params: { filePath: snap.filePath, encrypted: snap.encrypted ? '1' : '0' } }) },
                           { text: 'Inspect', onPress: () => router.push({ pathname: '/editor' as any, params: { filePath: snap.filePath } }) },
                           { text: 'Cancel', style: 'cancel' },
-                        ])
+                        ], 'info')
                       }}>
                         <MaterialIcons name="more-vert" size={20} color={C.textMuted} />
                       </TouchableOpacity>

@@ -30,16 +30,11 @@ jobs:
       - name: Install Node Dependencies
         run: npm install
         
-      # Note: Remove this step if you don't use a google-services.json secret
-      - name: Create google-services.json
-        env: 
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+      - name: Create .env
         run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" > google-services.json
-          else
-            echo "Skipping google-services.json creation (secret not set)"
-          fi
+          echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" >> .env
+          echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env
+          echo "ANDROID_CLIENT_ID=${{ secrets.ANDROID_CLIENT_ID }}" >> .env
           
       - name: Prebuild Expo Project
         env:
@@ -56,6 +51,16 @@ jobs:
           NODE_ENV: production
         run: cd android && ./gradlew assembleRelease
         
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: android/app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEYSTORE_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
       - name: Extract Release Notes
         id: release_notes
         run: |
@@ -73,7 +78,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: android/app/build/outputs/apk/release/app-release.apk
+          files: ${{ steps.sign_app.outputs.signedReleaseFile }}
           name: Release ${{ github.ref_name }}
           body_path: RELEASE_NOTES.txt
           draft: false

@@ -1,17 +1,27 @@
-import React, { useState, useCallback } from 'react'
-import {
-  ScrollView, StatusBar, StyleSheet, Switch,
-  Text, TouchableOpacity, View, ActivityIndicator, Alert,
-} from 'react-native'
 import { MaterialIcons } from '@expo/vector-icons'
 import { useFocusEffect } from '@react-navigation/native'
+import React, { useCallback, useState } from 'react'
+import {
+  ActivityIndicator,
+  Modal,
+  Platform,
+  ScrollView, StatusBar, StyleSheet, Switch,
+  Text,
+  TextInput,
+  TouchableOpacity, View
+} from 'react-native'
 import { AppHeader } from '../src/components/AppHeader'
 import { BottomNav } from '../src/components/BottomNav'
 import { SecurityPulse } from '../src/components/SecurityPulse'
+import { useAlert } from '../src/hooks/useAlert'
+import { useKeyboardHeight } from '../src/hooks/useKeyboardHeight'
+import { downloadFile, getAccessToken, getOrCreateFolder, listDriveBackups } from '../src/services/drive.service'
+import { deleteSmsById, groupIntoThreads, isDefaultSmsApp, readAllSms, requestDefaultSmsApp } from '../src/services/sms.service'
+import { useDriveStore } from '../src/store/drive.store'
 import { C, R, S } from '../src/theme'
-import { readAllSms } from '../src/services/sms.service'
-import { isOTP, isPromotional, filterCleanupCandidates } from '../src/utils/rules'
+import { Message } from '../src/types/sms.types'
 import { formatRelative } from '../src/utils/date'
+import { isOTP, isPromotional, matchesCustomRule, RuleConditionType } from '../src/utils/rules'
 
 const AVG_MSG_BYTES = 512 // rough estimate per message for savings display
 
@@ -21,16 +31,41 @@ function formatBytes(bytes: number): string {
 }
 
 export default function CleanupScreen() {
+  const { alert } = useAlert()
+  const kbHeight = useKeyboardHeight()
   const [otpEnabled, setOtpEnabled] = useState(true)
   const [promoEnabled, setPromoEnabled] = useState(true)
   const [threadLimit, setThreadLimit] = useState(50)
+  const [threadLimitEnabled, setThreadLimitEnabled] = useState(false)
 
   const [scanning, setScanning] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
   const [lastScanAt, setLastScanAt] = useState<number | null>(null)
-  const [otpCount, setOtpCount] = useState<number | null>(null)
-  const [promoCount, setPromoCount] = useState<number | null>(null)
+  const [otpMessages, setOtpMessages] = useState<Message[]>([])
+  const [promoMessages, setPromoMessages] = useState<Message[]>([])
+  const [threadLimitMessages, setThreadLimitMessages] = useState<Message[]>([])
   const [totalCount, setTotalCount] = useState<number | null>(null)
-  const [candidateCount, setCandidateCount] = useState<number | null>(null)
+  const [cleanedCount, setCleanedCount] = useState<number | null>(null)
+
+  // Custom Rules
+  const { activeAccount, customRules, addCustomRule, deleteCustomRule, setCustomRules, updateCustomRule } = useDriveStore()
+  const [customRuleMessages, setCustomRuleMessages] = useState<Message[]>([])
+  const [addRuleVisible, setAddRuleVisible] = useState(false)
+  const [newRuleType, setNewRuleType] = useState<RuleConditionType>('sender_contains')
+  const [newRuleValue, setNewRuleValue] = useState('')
+  const [newRuleName, setNewRuleName] = useState('')
+  const [cleanProgress, setCleanProgress] = useState(0)
+  const [syncingRules, setSyncingRules] = useState(false)
+
+  const otpCount = otpMessages.length > 0 ? otpMessages.length : totalCount !== null ? 0 : null
+  const promoCount = promoMessages.length > 0 ? promoMessages.length : totalCount !== null ? 0 : null
+  const customCount = customRuleMessages.length > 0 ? customRuleMessages.length : totalCount !== null ? 0 : null
+  const threadLimitCount = threadLimitMessages.length > 0 ? threadLimitMessages.length : totalCount !== null ? 0 : null
+
+  const activeCandidates = (otpEnabled ? otpMessages.length : 0) +
+    (promoEnabled ? promoMessages.length : 0) +
+    (threadLimitEnabled ? threadLimitMessages.length : 0) +
+    customCount!
 
   async function runScan() {
     setScanning(true)
@@ -38,17 +73,140 @@ export default function CleanupScreen() {
       const messages = await readAllSms()
       const otps = messages.filter(isOTP)
       const promos = messages.filter(isPromotional)
-      const candidates = filterCleanupCandidates(messages)
+      const customs = messages.filter(m => matchesCustomRule(m, customRules))
+
+      let threadsToDelete: Message[] = []
+      if (threadLimitEnabled && threadLimit > 0) {
+        const threads = groupIntoThreads(messages)
+        for (const thread of threads) {
+          if (thread.messages.length > threadLimit) {
+            threadsToDelete.push(...thread.messages.slice(0, thread.messages.length - threadLimit))
+          }
+        }
+      }
+
       setTotalCount(messages.length)
-      setOtpCount(otps.length)
-      setPromoCount(promos.length)
-      setCandidateCount(candidates.length)
+      setOtpMessages(otps)
+      setPromoMessages(promos)
+      setThreadLimitMessages(threadsToDelete)
+      setCustomRuleMessages(customs)
       setLastScanAt(Date.now())
+      setCleanedCount(null)
     } catch (e: any) {
-      Alert.alert('Scan Failed', e?.message ?? 'Could not read device messages.')
+      alert('Scan Failed', e?.message ?? 'Could not read device messages.', [{ text: 'OK' }], 'error')
     } finally {
       setScanning(false)
     }
+  }
+
+  async function downloadLatestRules() {
+    if (!activeAccount) {
+      alert('Not Connected', 'Connect to Google Drive in settings first.', [{ text: 'OK' }], 'warning')
+      return;
+    }
+    setSyncingRules(true)
+    try {
+      const token = await getAccessToken()
+      const folderId = await getOrCreateFolder(token)
+      const files = await listDriveBackups(folderId, token)
+      const rulesFile = files.find(f => f.name === 'custom_rules.json')
+      if (rulesFile) {
+        const content = await downloadFile(rulesFile.id, token)
+        const rules = JSON.parse(content)
+        await setCustomRules(rules)
+        alert('Rules Synced', 'Custom rules successfully downloaded from Drive.', [{ text: 'OK' }], 'check-circle')
+        runScan() // Re-scan with new rules
+      } else {
+        alert('No Cloud Rules', 'No custom rules found in your Drive.', [{ text: 'OK' }], 'info')
+      }
+    } catch (e: any) {
+      alert('Sync Error', e?.message ?? 'Could not fetch cloud rules', [{ text: 'OK' }], 'error')
+    } finally {
+      setSyncingRules(false)
+    }
+  }
+
+  async function runClean() {
+    const allCands = [
+      ...(otpEnabled ? otpMessages : []),
+      ...(promoEnabled ? promoMessages : []),
+      ...(threadLimitEnabled ? threadLimitMessages : []),
+      ...customRuleMessages,
+    ]
+    const candidates = Array.from(new Set(allCands))
+
+    if (candidates.length === 0) {
+      alert('Nothing to Clean', 'No eligible messages found. Run a scan first.', [{ text: 'OK' }], 'info')
+      return
+    }
+
+    const isDefault = await isDefaultSmsApp()
+    if (!isDefault) {
+      alert(
+        'Default SMS App Required',
+        'To delete messages from your device, SecureSMS must be the default SMS app. Set it as default now?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Set as Default',
+            onPress: async () => {
+              const granted = await requestDefaultSmsApp()
+              if (granted) runClean()
+            },
+          },
+        ],
+        'warning'
+      )
+      return
+    }
+
+    alert(
+      'Clean Device Messages',
+      `This will permanently delete ${candidates.length} message(s) from your device. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive',
+          onPress: async () => {
+            setCleaning(true)
+            setCleanProgress(0)
+            let deleted = 0
+            for (let i = 0; i < candidates.length; i++) {
+              try {
+                await deleteSmsById(candidates[i].id)
+                deleted++
+              } catch { /* skip failed */ }
+              if (i % 5 === 0) setCleanProgress(i / candidates.length)
+            }
+            setCleanProgress(1)
+            // Re-scan to refresh counts
+            await runScan()
+            setCleanedCount(deleted)
+            setCleaning(false)
+            alert('Done', `Deleted ${deleted} message(s) from your device.`, [{ text: 'OK' }], 'check-circle')
+          },
+        },
+      ],
+      'delete'
+    )
+  }
+
+  function handleSaveRule() {
+    if (!newRuleName || !newRuleValue) {
+      alert('Invalid Block', 'Please provide both a name and a value.')
+      return
+    }
+    addCustomRule({
+      id: Date.now().toString(),
+      name: newRuleName,
+      type: newRuleType,
+      value: newRuleValue,
+      enabled: true
+    })
+    setAddRuleVisible(false)
+    setNewRuleName('')
+    setNewRuleValue('')
+    runScan()
   }
 
   useFocusEffect(useCallback(() => {
@@ -56,7 +214,6 @@ export default function CleanupScreen() {
     if (lastScanAt === null) runScan()
   }, [lastScanAt]))
 
-  const activeCandidates = (otpEnabled ? (otpCount ?? 0) : 0) + (promoEnabled ? (promoCount ?? 0) : 0)
   const optimizedPct = totalCount && totalCount > 0
     ? Math.round(100 - (activeCandidates / totalCount) * 100)
     : 100
@@ -77,26 +234,45 @@ export default function CleanupScreen() {
         </View>
 
         {/* Automation Status */}
-        <View style={styles.statusCard}>
+        <View style={[styles.statusCard, { flexDirection: 'column', alignItems: 'stretch', gap: 12, borderRadius: R.xl }]}>
           <View style={styles.statusLeft}>
-            {scanning
+            {(scanning || cleaning)
               ? <ActivityIndicator color={C.primary} size="small" />
               : <SecurityPulse size={8} />
             }
-            <View style={{ marginLeft: 12 }}>
+            <View style={{ marginLeft: 12, flex: 1 }}>
               <Text style={styles.statusTitle}>
-                {scanning ? 'Scanning messages...' : 'Automation Engine Active'}
+                {cleaning ? 'Deleting messages...' : scanning ? 'Scanning messages...' : 'Automation Engine Active'}
               </Text>
               <Text style={styles.statusSub}>
-                {lastScanAt
-                  ? `Last sweep: ${formatRelative(lastScanAt)}`
-                  : scanning ? 'Analyzing your messages' : 'Not scanned yet'}
+                {cleaning ? 'Removing eligible messages from device'
+                  : cleanedCount !== null ? `Cleaned ${cleanedCount} message(s) — scan to refresh`
+                    : lastScanAt ? `Last sweep: ${formatRelative(lastScanAt)}`
+                      : scanning ? 'Analyzing your messages' : 'Not scanned yet'}
               </Text>
             </View>
           </View>
-          <TouchableOpacity style={styles.runNowBtn} onPress={runScan} disabled={scanning} activeOpacity={0.85}>
-            <Text style={styles.runNowTxt}>{scanning ? 'SCANNING' : 'RUN NOW'}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+            <TouchableOpacity style={styles.runNowBtn} onPress={runScan} disabled={scanning || cleaning} activeOpacity={0.85}>
+              <Text style={styles.runNowTxt}>{scanning ? 'SCANNING' : 'SCAN'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.cleanNowBtn, (scanning || cleaning) && { opacity: 0.5 }]}
+              onPress={runClean}
+              disabled={scanning || cleaning}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="delete-sweep" size={14} color="#000" />
+              <Text style={styles.cleanNowTxt}>{cleaning ? 'CLEANING' : 'CLEAN NOW'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Progress Bar */}
+          {cleaning && (
+            <View style={{ height: 4, backgroundColor: C.surfaceContainerLowest, borderRadius: 2, overflow: 'hidden', marginTop: 8 }}>
+              <View style={{ height: 4, backgroundColor: C.tertiary, width: `${cleanProgress * 100}%` }} />
+            </View>
+          )}
         </View>
 
         {/* Scan Results — shown after scan */}
@@ -179,42 +355,120 @@ export default function CleanupScreen() {
 
           {/* Thread Retention */}
           <View style={[styles.ruleCard, styles.ruleCardWide]}>
+            <View style={styles.ruleTop}>
+              <View style={styles.ruleIconWrap}>
+                <MaterialIcons name="auto-delete" size={22} color={C.primary} />
+              </View>
+              <Switch
+                value={threadLimitEnabled}
+                onValueChange={setThreadLimitEnabled}
+                trackColor={{ false: C.surfaceContainerHighest, true: C.primary }}
+                thumbColor="#fff"
+              />
+            </View>
             <View style={styles.threadRetentionRow}>
               <View style={styles.threadRetentionLeft}>
-                <View style={styles.ruleIconWrap}>
-                  <MaterialIcons name="auto-delete" size={22} color={C.primary} />
-                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.ruleTitle}>Keep last {threadLimit} per thread</Text>
-                  <Text style={styles.ruleDesc}>Prune long-running conversations to save storage.</Text>
+                  <Text style={styles.ruleTitle}>Keep last per thread</Text>
+                  <Text style={styles.ruleDesc}>Prune long-running conversations to save storage.{threadLimitCount !== null ? ` ${threadLimitCount.toLocaleString()} found on device.` : ''}</Text>
                 </View>
               </View>
               <View style={styles.threadRetentionRight}>
-                <View style={styles.limitDisplay}>
-                  <Text style={styles.limitTxt}>{threadLimit} MSG</Text>
+                <View style={[styles.limitDisplay, { flexDirection: 'row', alignItems: 'center' }]}>
+                  <TextInput
+                    style={[styles.limitTxt, { padding: 0, minWidth: 28, textAlign: 'center' }]}
+                    keyboardType="number-pad"
+                    value={String(threadLimit)}
+                    onChangeText={(t) => setThreadLimit(parseInt(t) || 0)}
+                    editable={threadLimitEnabled}
+                    selectTextOnFocus
+                  />
+                  <Text style={styles.limitTxt}> MSG</Text>
                 </View>
-                <TouchableOpacity
-                  style={styles.editLimitBtn}
-                  onPress={() => setThreadLimit(t => t === 50 ? 100 : t === 100 ? 200 : 50)}
-                  activeOpacity={0.85}
-                >
-                  <MaterialIcons name="edit" size={18} color={C.text} />
-                </TouchableOpacity>
               </View>
+            </View>
+            <View style={styles.ruleFooter}>
+              <MaterialIcons name="visibility-off" size={14} color={threadLimitEnabled ? C.primary : C.textFaint} />
+              <Text style={[styles.ruleFooterTxt, { color: threadLimitEnabled ? C.primary : C.textFaint }]}>
+                {threadLimitEnabled ? 'ENABLED' : 'DISABLED'}
+              </Text>
             </View>
           </View>
 
-          {/* Add Custom Rule */}
-          <TouchableOpacity
-            style={styles.addRuleCard}
-            activeOpacity={0.85}
-            onPress={() => Alert.alert('Coming Soon', 'Custom automation rules will be available in a future update.')}
-          >
-            <View style={styles.addRuleIcon}>
-              <MaterialIcons name="add" size={22} color={C.primary} />
+          {/* Custom Rules Dynamic List */}
+          {customRules.map(rule => (
+            <View key={rule.id} style={styles.ruleCard}>
+              <View style={styles.ruleTop}>
+                <View style={styles.ruleIconWrap}>
+                  <MaterialIcons name="tune" size={22} color={C.tertiary} />
+                </View>
+                <Switch
+                  value={rule.enabled}
+                  onValueChange={(val) => {
+                    updateCustomRule(rule.id, { enabled: val })
+                    runScan()
+                  }}
+                  trackColor={{ false: C.surfaceContainerHighest, true: C.tertiary }}
+                  thumbColor="#fff"
+                />
+              </View>
+              <Text style={styles.ruleTitle}>{rule.name}</Text>
+              <Text style={styles.ruleDesc}>
+                Action: {rule.type.replace('_', ' ')} '{rule.value}'
+              </Text>
+              <View style={[styles.ruleFooter, { justifyContent: 'space-between' }]}>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  <MaterialIcons name="rule" size={14} color={rule.enabled ? C.tertiary : C.textFaint} />
+                  <Text style={[styles.ruleFooterTxt, { color: rule.enabled ? C.tertiary : C.textFaint }]}>
+                    CUSTOM RULE
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => {
+                  alert(
+                    'Delete Rule',
+                    `Are you sure you want to delete the rule "${rule.name}"?`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Delete', style: 'destructive', onPress: () => { deleteCustomRule(rule.id); runScan(); } }
+                    ],
+                    'warning'
+                  )
+                }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <MaterialIcons name="delete" size={16} color={C.error} />
+                </TouchableOpacity>
+              </View>
             </View>
-            <Text style={styles.addRuleTxt}>CREATE CUSTOM AUTOMATION RULE</Text>
-          </TouchableOpacity>
+          ))}
+
+          <View style={{ flexDirection: 'row', gap: S.md }}>
+            {activeAccount && (
+              <TouchableOpacity
+                style={[styles.addRuleCard, { flex: 1, borderColor: C.secondary, opacity: syncingRules ? 0.6 : 1 }]}
+                activeOpacity={0.85}
+                onPress={downloadLatestRules}
+                disabled={syncingRules}
+              >
+                <View style={[styles.addRuleIcon, { backgroundColor: 'rgba(235,178,81,0.2)' }]}>
+                  {syncingRules ? <ActivityIndicator color={C.secondary} size="small" /> : <MaterialIcons name="cloud-download" size={22} color={C.secondary} />}
+                </View>
+                <Text style={[styles.addRuleTxt, { color: C.secondary, textAlign: 'center' }]}>
+                  {syncingRules ? 'SYNCING RULES...' : 'DOWNLOAD LATEST CLOUD RULES'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Add Custom Rule */}
+            <TouchableOpacity
+              style={[styles.addRuleCard, { flex: activeAccount ? 1 : undefined }]}
+              activeOpacity={0.85}
+              onPress={() => setAddRuleVisible(true)}
+            >
+              <View style={styles.addRuleIcon}>
+                <MaterialIcons name="add" size={22} color={C.primary} />
+              </View>
+              <Text style={[styles.addRuleTxt, { textAlign: 'center' }]}>CREATE CUSTOM RULE</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Storage Insight */}
@@ -247,6 +501,53 @@ export default function CleanupScreen() {
         </View>
       </ScrollView>
 
+      {/* Add Rule Modal */}
+      <Modal visible={addRuleVisible} animationType="slide" transparent>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setAddRuleVisible(false)} />
+        <View style={[styles.modalContent, { paddingBottom: kbHeight > 0 ? kbHeight + 16 : (Platform.OS === 'ios' ? 40 : S.xl) }]}>
+          <Text style={styles.modalTitle}>New Custom Rule</Text>
+          <Text style={styles.modalSub}>Define an explicit rule to prune messages during cleanups.</Text>
+
+          <Text style={styles.inputLabel}>Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. Block Bank Alerts"
+            placeholderTextColor={C.textFaint}
+            value={newRuleName}
+            onChangeText={setNewRuleName}
+            autoCorrect={false}
+          />
+
+          <Text style={styles.inputLabel}>Condition</Text>
+          <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+            {(['sender_contains', 'sender_equals', 'body_contains'] as RuleConditionType[]).map(rt => (
+              <TouchableOpacity key={rt} style={[styles.conditionChip, newRuleType === rt && { backgroundColor: C.primary, borderColor: C.primary }]} onPress={() => setNewRuleType(rt)}>
+                <Text style={[styles.conditionChipTxt, newRuleType === rt && { color: C.bg }]}>
+                  {rt.replace('_', ' ')}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.inputLabel}>Value</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. INFOSMS"
+            placeholderTextColor={C.textFaint}
+            value={newRuleValue}
+            onChangeText={setNewRuleValue}
+            autoCorrect={false}
+          />
+
+          <TouchableOpacity style={[styles.sheetPrimaryBtn, { marginTop: 16 }]} onPress={handleSaveRule}>
+            <Text style={styles.sheetPrimaryBtnTxt}>Save Rule</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.sheetSecondaryBtn, { marginTop: 8 }]} onPress={() => setAddRuleVisible(false)}>
+            <Text style={styles.sheetSecondaryBtnTxt}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </Modal>
+
       <BottomNav />
     </View>
   )
@@ -274,6 +575,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(62,73,70,0.15)',
   },
   runNowTxt: { fontSize: 12, fontWeight: '800', color: C.primary, letterSpacing: 1 },
+  cleanNowBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: C.tertiary, borderRadius: R.xl,
+    paddingHorizontal: S.md, paddingVertical: 8,
+  },
+  cleanNowTxt: { fontSize: 12, fontWeight: '800', color: C.bg, letterSpacing: 1 },
 
   resultsRow: { flexDirection: 'row', gap: S.sm },
   resultCard: {
@@ -336,4 +643,24 @@ const styles = StyleSheet.create({
   ringLabel: { fontSize: 8, fontWeight: '700', color: C.textFaint, textTransform: 'uppercase', letterSpacing: 1 },
   insightTitle: { fontSize: 16, fontWeight: '700', color: C.text, marginBottom: 6 },
   insightDesc: { fontSize: 13, color: C.textMuted, lineHeight: 20 },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  modalContent: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: C.surfaceContainerLowest, borderTopLeftRadius: R.xl, borderTopRightRadius: R.xl,
+    padding: S.xl, paddingBottom: Platform.OS === 'ios' ? 40 : S.xl
+  },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: C.text, marginBottom: 4 },
+  modalSub: { fontSize: 13, color: C.textMuted, marginBottom: 24 },
+  inputLabel: { fontSize: 11, fontWeight: '700', color: C.primary, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 },
+  input: {
+    backgroundColor: C.surfaceContainer, borderRadius: R.lg, padding: 14,
+    fontSize: 16, color: C.text, marginBottom: 16,
+  },
+  conditionChip: { borderWidth: 1, borderColor: 'rgba(62,73,70,0.2)', borderRadius: R.xl, paddingHorizontal: 12, paddingVertical: 8 },
+  conditionChipTxt: { fontSize: 12, fontWeight: '600', color: C.text, textTransform: 'capitalize' },
+  sheetPrimaryBtn: { backgroundColor: C.primary, borderRadius: R.xl, padding: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
+  sheetPrimaryBtnTxt: { fontSize: 15, fontWeight: '800', color: C.bg },
+  sheetSecondaryBtn: { padding: 14, alignItems: 'center' },
+  sheetSecondaryBtnTxt: { fontSize: 14, fontWeight: '700', color: C.textMuted },
 })

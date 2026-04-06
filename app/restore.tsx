@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  StatusBar, Alert, ActivityIndicator, AppState, AppStateStatus,
+  StatusBar, ActivityIndicator, AppState, AppStateStatus,
 } from 'react-native'
 import { MaterialIcons } from '@expo/vector-icons'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { AppHeader } from '../src/components/AppHeader'
 import { BottomNav } from '../src/components/BottomNav'
+import { PasswordUnlockModal } from '../src/components/PasswordUnlockModal'
 import { C, R, S } from '../src/theme'
 import { loadBackup } from '../src/services/backup.service'
 import { diffThreads } from '../src/services/diff.service'
@@ -16,24 +17,334 @@ import {
   openDefaultSmsSettings, readAllSms, groupIntoThreads,
 } from '../src/services/sms.service'
 import { useAppStore } from '../src/store/useAppStore'
-import { formatDate } from '../src/utils/date'
+import { useAlert } from '../src/hooks/useAlert'
+import { formatDate, formatTime } from '../src/utils/date'
 import type { BackupFile, DiffResult, Message, MessageConflict } from '../src/types/sms.types'
+
+type TabKey = 'added' | 'removed' | 'conflicts'
+type ViewMode = 'side' | 'stack'
+
+// ---------- helpers ----------
+
+/** Find changed span in `str` relative to `other`. Returns [prefix, changed, suffix] */
+function spanDiff(str: string, other: string): [string, string, string] {
+  let s = 0
+  const minLen = Math.min(str.length, other.length)
+  while (s < minLen && str[s] === other[s]) s++
+  // expand back to word boundary
+  while (s > 0 && str[s - 1] !== ' ' && str[s - 1] !== '\n') s--
+
+  let eS = str.length - 1
+  let eO = other.length - 1
+  while (eS >= s && eO >= s && str[eS] === other[eO]) { eS--; eO-- }
+  // expand forward to word boundary
+  while (eS < str.length - 1 && str[eS + 1] !== ' ' && str[eS + 1] !== '\n') eS++
+
+  return [str.slice(0, s), str.slice(s, eS + 1), str.slice(eS + 1)]
+}
+
+// ---------- sub-components ----------
+
+function TabBar({
+  active, counts, onSelect,
+}: {
+  active: TabKey
+  counts: { added: number; removed: number; conflicts: number }
+  onSelect: (t: TabKey) => void
+}) {
+  const tabs: { key: TabKey; label: string; color: string; icon: string }[] = [
+    { key: 'added', label: 'Added', color: C.primary, icon: 'add-circle-outline' },
+    { key: 'removed', label: 'Removed', color: C.error, icon: 'remove-circle-outline' },
+    { key: 'conflicts', label: 'Conflicts', color: C.tertiary, icon: 'warning-amber' },
+  ]
+  return (
+    <View style={tab.row}>
+      {tabs.map(t => {
+        const isActive = active === t.key
+        const count = counts[t.key]
+        return (
+          <TouchableOpacity
+            key={t.key}
+            style={[tab.btn, isActive && { borderBottomColor: t.color, borderBottomWidth: 2 }]}
+            onPress={() => onSelect(t.key)}
+            activeOpacity={0.7}
+          >
+            <MaterialIcons name={t.icon as any} size={14} color={isActive ? t.color : C.textFaint} />
+            <Text style={[tab.label, isActive && { color: t.color }]}>{t.label}</Text>
+            <View style={[tab.badge, { backgroundColor: `${t.color}22` }]}>
+              <Text style={[tab.badgeTxt, { color: t.color }]}>{count}</Text>
+            </View>
+          </TouchableOpacity>
+        )
+      })}
+    </View>
+  )
+}
+
+const tab = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    backgroundColor: C.surfaceContainerHigh,
+    borderRadius: R.xl, padding: 3, gap: 2,
+  },
+  btn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 4, paddingVertical: 10, paddingHorizontal: 6,
+    borderRadius: R.lg, borderBottomWidth: 0,
+  },
+  label: { fontSize: 11, fontWeight: '700', color: C.textFaint },
+  badge: {
+    minWidth: 18, height: 18, borderRadius: 9,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
+  },
+  badgeTxt: { fontSize: 10, fontWeight: '800' },
+})
+
+function MessageCard({ msg, accent }: { msg: Message; accent: string }) {
+  const isSent = msg.type === 2
+  return (
+    <View style={[card.wrap, { borderLeftColor: accent, borderLeftWidth: 3 }]}>
+      <View style={card.header}>
+        <View style={[card.avatar, { backgroundColor: `${accent}22` }]}>
+          <MaterialIcons name="person" size={14} color={accent} />
+        </View>
+        <Text style={card.addr} numberOfLines={1}>{msg.address ?? 'Unknown'}</Text>
+        <Text style={card.date}>{formatDate(msg.date)}</Text>
+        <Text style={card.time}>{formatTime(msg.date)}</Text>
+        <View style={[card.typeBadge, { backgroundColor: `${accent}15` }]}>
+          <Text style={[card.typeTxt, { color: accent }]}>{isSent ? 'Sent' : 'Recv'}</Text>
+        </View>
+      </View>
+      <Text style={card.body}>{msg.body}</Text>
+    </View>
+  )
+}
+
+const card = StyleSheet.create({
+  wrap: {
+    backgroundColor: C.surfaceContainerLow,
+    borderRadius: R.xl, overflow: 'hidden',
+    borderWidth: 1, borderColor: 'rgba(62,73,70,0.08)',
+  },
+  header: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: S.md, paddingVertical: 10,
+    backgroundColor: C.surfaceContainerHigh,
+  },
+  avatar: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  addr: { flex: 1, fontSize: 13, fontWeight: '700', color: C.text },
+  date: { fontSize: 10, color: C.textFaint },
+  time: { fontSize: 10, color: C.textFaint },
+  typeBadge: { borderRadius: R.sm, paddingHorizontal: 6, paddingVertical: 2 },
+  typeTxt: { fontSize: 9, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+  body: { fontSize: 13, color: C.text, lineHeight: 20, padding: S.md },
+})
+
+function DiffText({
+  local, vault, which,
+}: { local: string; vault: string; which: 'local' | 'vault' }) {
+  const str = which === 'local' ? local : vault
+  const other = which === 'local' ? vault : local
+  const [prefix, changed, suffix] = spanDiff(str, other)
+  const highlightColor = which === 'local' ? C.error : C.primary
+  const highlightBg = which === 'local' ? 'rgba(147,0,10,0.18)' : 'rgba(93,218,195,0.18)'
+
+  return (
+    <Text style={diff.bodyText}>
+      {prefix}
+      {changed.length > 0 && (
+        <Text style={[diff.highlight, { color: highlightColor, backgroundColor: highlightBg }]}>
+          {changed}
+        </Text>
+      )}
+      {suffix}
+    </Text>
+  )
+}
+
+const diff = StyleSheet.create({
+  bodyText: { fontSize: 13, color: C.text, lineHeight: 20 },
+  highlight: { fontWeight: '700', borderRadius: 3 },
+})
+
+function ConflictCard({
+  conflict, index, viewMode,
+}: { conflict: MessageConflict; index: number; viewMode: ViewMode }) {
+  const name = conflict.local.address ?? `Unknown #${index + 1}`
+  const shortName = name.length > 24 ? name.slice(0, 22) + '…' : name
+  const sameText = conflict.local.body === conflict.backup.body
+
+  if (viewMode === 'side') {
+    return (
+      <View style={cs.card}>
+        <View style={cs.header}>
+          <View style={cs.avatar}>
+            <MaterialIcons name="person" size={16} color={C.tertiary} />
+          </View>
+          <Text style={cs.name}>{shortName}</Text>
+          <Text style={cs.dateSmall}>{formatDate(conflict.local.date)}</Text>
+          {sameText && (
+            <View style={cs.pill}>
+              <Text style={cs.pillTxt}>DATE DIFF</Text>
+            </View>
+          )}
+        </View>
+        <View style={cs.sideRow}>
+          <View style={[cs.side, cs.sideLocal]}>
+            <Text style={cs.sideLabel}>Device</Text>
+            <Text style={cs.sideBody} numberOfLines={6}>{conflict.local.body}</Text>
+            <Text style={cs.sideTime}>{formatDate(conflict.local.date)}</Text>
+          </View>
+          <View style={cs.divider} />
+          <View style={[cs.side, cs.sideVault]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 }}>
+              <Text style={[cs.sideLabel, { color: C.primary }]}>Vault</Text>
+              <MaterialIcons name="verified-user" size={10} color={C.primary} />
+            </View>
+            <Text style={cs.sideBody} numberOfLines={6}>{conflict.backup.body}</Text>
+            <Text style={[cs.sideTime, { color: 'rgba(114,237,214,0.5)' }]}>
+              {formatDate(conflict.backup.dateSent ?? conflict.backup.date)}
+            </Text>
+          </View>
+        </View>
+      </View>
+    )
+  }
+
+  // Stacked view with diff highlighting
+  return (
+    <View style={cs.card}>
+      <View style={cs.header}>
+        <View style={cs.avatar}>
+          <MaterialIcons name="person" size={16} color={C.tertiary} />
+        </View>
+        <Text style={cs.name}>{shortName}</Text>
+        <Text style={cs.dateSmall}>{formatDate(conflict.local.date)}</Text>
+      </View>
+
+      {/* Local */}
+      <View style={cs.stackSide}>
+        <Text style={cs.stackLabel}>Local Device</Text>
+        <View style={cs.stackBubbleLocal}>
+          <DiffText local={conflict.local.body} vault={conflict.backup.body} which="local" />
+          <Text style={[cs.sideTime, { marginTop: 6 }]}>{formatDate(conflict.local.date)} {formatTime(conflict.local.date)}</Text>
+        </View>
+      </View>
+
+      {/* Arrow */}
+      <View style={cs.stackArrow}>
+        <View style={cs.stackArrowLine} />
+        <MaterialIcons name="arrow-downward" size={16} color={C.textFaint} />
+        <View style={cs.stackArrowLine} />
+      </View>
+
+      {/* Vault */}
+      <View style={cs.stackSide}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Text style={[cs.stackLabel, { color: C.primary }]}>Vault Backup</Text>
+          <MaterialIcons name="verified-user" size={10} color={C.primary} />
+        </View>
+        <View style={cs.stackBubbleVault}>
+          <DiffText local={conflict.local.body} vault={conflict.backup.body} which="vault" />
+          <Text style={[cs.sideTime, { color: 'rgba(114,237,214,0.5)', marginTop: 6 }]}>
+            {formatDate(conflict.backup.dateSent ?? conflict.backup.date)} {formatTime(conflict.backup.dateSent ?? conflict.backup.date)}
+          </Text>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+const cs = StyleSheet.create({
+  card: {
+    backgroundColor: C.surfaceContainerLow,
+    borderRadius: R.xl, overflow: 'hidden',
+    borderWidth: 1, borderColor: 'rgba(62,73,70,0.1)',
+  },
+  header: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.surfaceContainerHigh,
+    paddingHorizontal: S.md, paddingVertical: 10,
+  },
+  avatar: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: 'rgba(93,218,195,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  name: { flex: 1, fontSize: 13, fontWeight: '700', color: C.text },
+  dateSmall: { fontSize: 10, color: C.textFaint },
+  pill: {
+    backgroundColor: 'rgba(93,218,195,0.1)', borderRadius: R.full,
+    paddingHorizontal: 6, paddingVertical: 2,
+  },
+  pillTxt: { fontSize: 8, fontWeight: '800', color: C.tertiary, letterSpacing: 0.5 },
+
+  // Side-by-side
+  sideRow: { flexDirection: 'row' },
+  side: { flex: 1, padding: S.md },
+  sideLocal: { backgroundColor: 'rgba(147,0,10,0.04)' },
+  sideVault: { backgroundColor: 'rgba(93,218,195,0.04)' },
+  divider: { width: 1, backgroundColor: 'rgba(62,73,70,0.1)' },
+  sideLabel: {
+    fontSize: 9, fontWeight: '800', color: C.textFaint,
+    textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 8,
+  },
+  sideBody: { fontSize: 12, color: C.text, lineHeight: 18, flex: 1 },
+  sideTime: {
+    fontSize: 9, color: 'rgba(226,226,229,0.4)',
+    marginTop: 6, fontStyle: 'italic',
+  },
+
+  // Stacked
+  stackSide: { paddingHorizontal: S.md, paddingVertical: S.sm },
+  stackLabel: {
+    fontSize: 9, fontWeight: '800', color: C.textFaint,
+    textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 6,
+  },
+  stackBubbleLocal: {
+    backgroundColor: 'rgba(147,0,10,0.07)',
+    borderRadius: R.lg, borderBottomLeftRadius: 4,
+    padding: S.md,
+    borderWidth: 1, borderColor: 'rgba(147,0,10,0.12)',
+  },
+  stackBubbleVault: {
+    backgroundColor: 'rgba(93,218,195,0.07)',
+    borderRadius: R.lg, borderBottomRightRadius: 4,
+    padding: S.md,
+    borderWidth: 1, borderColor: 'rgba(93,218,195,0.15)',
+  },
+  stackArrow: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: S.lg,
+    gap: 8, opacity: 0.4,
+  },
+  stackArrowLine: { flex: 1, height: 1, backgroundColor: C.textFaint },
+})
+
+// ---------- main screen ----------
 
 export default function RestoreScreen() {
   const router = useRouter()
+  const { alert } = useAlert()
   const { filePath, encrypted } = useLocalSearchParams<{ filePath?: string; encrypted?: string }>()
 
   const [diff, setDiff] = useState<DiffResult | null>(null)
   const [loadedBackup, setLoadedBackup] = useState<BackupFile | null>(null)
-  const [loading, setLoading] = useState(!!filePath)
+  const [loading, setLoading] = useState(false)
   const [restoring, setRestoring] = useState(false)
-  const [requestingDefault, setRequestingDefault] = useState(false)
   const [isDefault, setIsDefault] = useState<boolean | null>(null)
+  const [unlockVisible, setUnlockVisible] = useState(encrypted === '1')
+  const [unlockError, setUnlockError] = useState<string | null>(null)
+  const [unlocking, setUnlocking] = useState(false)
+
+  const [activeTab, setActiveTab] = useState<TabKey>('added')
+  const [viewMode, setViewMode] = useState<ViewMode>('stack')
+
   const setRestoreProgress = useAppStore(s => s.setRestoreProgress)
   const sentToSettingsRef = useRef(false)
 
-  // Re-check default SMS status whenever the app comes back to foreground
-  // (user may have set it in Settings and returned)
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (state: AppStateStatus) => {
       if (state === 'active' && sentToSettingsRef.current) {
@@ -41,56 +352,77 @@ export default function RestoreScreen() {
         const result = await isDefaultSmsApp()
         setIsDefault(result)
         if (result) {
-          Alert.alert('Default App Set', 'SecureSMS is now your default SMS app. You can confirm the restore.')
+          alert('Default App Set', 'SecureSMS is now your default SMS app. You can confirm the restore.', undefined, 'verified-user')
         }
       }
     })
     return () => sub.remove()
   }, [])
 
-  useEffect(() => {
-    // Check default app status on mount
-    isDefaultSmsApp().then(setIsDefault).catch(() => setIsDefault(false))
-
+  async function loadAndDiff(password?: string) {
     if (!filePath) return
-    ;(async () => {
-      try {
-        const backup = await loadBackup(filePath)
-        setLoadedBackup(backup)
-        const deviceMessages = await readAllSms()
-        const deviceThreads = groupIntoThreads(deviceMessages)
-        const result = diffThreads(backup.threads, deviceThreads)
-        setDiff(result)
-      } catch {
-        Alert.alert('Error', 'Failed to load backup file.')
-      } finally {
-        setLoading(false)
+    setLoading(true)
+    try {
+      const backup = await loadBackup(filePath, password)
+      setLoadedBackup(backup)
+      const deviceMessages = await readAllSms()
+      const deviceThreads = groupIntoThreads(deviceMessages)
+      const result = diffThreads(backup.threads, deviceThreads)
+      setDiff(result)
+      // Auto-select tab with most content
+      if (result.added.length >= result.removed.length && result.added.length >= result.conflicts.length) {
+        setActiveTab('added')
+      } else if (result.removed.length >= result.conflicts.length) {
+        setActiveTab('removed')
+      } else {
+        setActiveTab('conflicts')
       }
-    })()
+    } catch (eValue: any) {
+      throw eValue
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleUnlock(password: string) {
+    setUnlocking(true)
+    setUnlockError(null)
+    try {
+      await loadAndDiff(password)
+      setUnlockVisible(false)
+    } catch (eError: any) {
+      setUnlockError(eError?.message ?? 'Failed to decrypt.')
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
+  useEffect(() => {
+    isDefaultSmsApp().then(setIsDefault).catch(() => setIsDefault(false))
+    if (encrypted !== '1') {
+      loadAndDiff().catch(() => alert('Error', 'Failed to load backup file.'))
+    }
   }, [filePath])
 
   async function handleConfirmRestore() {
     if (!loadedBackup) return
-
     const currentlyDefault = isDefault ?? (await isDefaultSmsApp())
     setIsDefault(currentlyDefault)
-
     if (!currentlyDefault) {
-      Alert.alert(
+      alert(
         'Default SMS App Required',
-        'SecureSMS must be your default SMS app to insert messages. Both options below will ask you to confirm — come back here afterwards.',
+        'SecureSMS must be your default SMS app to insert messages.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Change via Dialog',
             onPress: () => {
               sentToSettingsRef.current = true
-              // Small delay lets the Alert fully dismiss before the system dialog appears
               setTimeout(async () => {
                 const result = await requestDefaultSmsApp()
                 if (result) {
                   setIsDefault(true)
-                  Alert.alert('Default App Set', 'SecureSMS is now your default SMS app. You can confirm the restore.')
+                  alert('Default App Set', 'SecureSMS is now your default SMS app.', undefined, 'verified-user')
                 }
               }, 300)
             },
@@ -99,24 +431,20 @@ export default function RestoreScreen() {
             text: 'Open Settings',
             onPress: async () => {
               sentToSettingsRef.current = true
-              await openDefaultSmsSettings() // opens Default Apps settings page
+              await openDefaultSmsSettings()
             },
           },
-        ]
+        ],
+        'error'
       )
       return
     }
-
     setRestoring(true)
     try {
       await restoreBackup(loadedBackup, (progress) => setRestoreProgress(progress))
-      Alert.alert(
-        'Restore Complete',
-        'All messages have been restored successfully.',
-        [{ text: 'Done', onPress: () => router.back() }]
-      )
-    } catch (e: any) {
-      Alert.alert('Restore Failed', e?.message ?? 'Unknown error occurred.')
+      alert('Restore Complete', 'All messages have been restored successfully.', [{ text: 'Done', onPress: () => router.back() }], 'check-circle')
+    } catch (eVal: any) {
+      alert('Restore Failed', eVal?.message ?? 'Unknown error occurred.', [{ text: 'OK', style: 'cancel' }], 'error')
     } finally {
       setRestoring(false)
     }
@@ -126,108 +454,148 @@ export default function RestoreScreen() {
   const removedCount = diff?.removed.length ?? 0
   const conflictCount = diff?.conflicts.length ?? 0
 
+  function renderContent() {
+    if (loading) {
+      return (
+        <View style={styles.loadingCard}>
+          <ActivityIndicator color={C.primary} size="small" />
+          <Text style={{ color: C.textMuted, fontSize: 13, marginLeft: 12 }}>
+            Reading device messages & computing diff…
+          </Text>
+        </View>
+      )
+    }
+    if (!diff) return null
+
+    if (activeTab === 'added') {
+      if (diff.added.length === 0) return <EmptyState icon="inbox" text="No new messages — backup matches device." />
+      return diff.added.map((msg, i) => (
+        <MessageCard key={`a-${msg.date}-${i}`} msg={msg} accent={C.primary} />
+      ))
+    }
+
+    if (activeTab === 'removed') {
+      if (diff.removed.length === 0) return <EmptyState icon="check-circle" text="No messages removed since backup." />
+      return diff.removed.map((msg, i) => (
+        <MessageCard key={`r-${msg.date}-${i}`} msg={msg} accent={C.error} />
+      ))
+    }
+
+    // conflicts
+    if (diff.conflicts.length === 0) return <EmptyState icon="verified-user" text="No conflicts — timestamps match exactly." />
+    return diff.conflicts.map((conflict, i) => (
+      <ConflictCard key={`c-${conflict.local.id}-${i}`} conflict={conflict} index={i} viewMode={viewMode} />
+    ))
+  }
+
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
       <AppHeader onBack={() => router.back()} />
+      <PasswordUnlockModal
+        visible={unlockVisible}
+        filename={filePath?.split('/').pop()}
+        loading={unlocking}
+        error={unlockError}
+        onUnlock={handleUnlock}
+        onChange={() => setUnlockError(null)}
+        onCancel={() => { setUnlockVisible(false); router.back() }}
+      />
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         {/* Title */}
-        <View style={{ gap: 4 }}>
-          <Text style={styles.pageTitle}>Review Restoration</Text>
-          <Text style={styles.pageSub}>Compare local state with encrypted vault backup.</Text>
+        <View>
+          <Text style={styles.pageTitle}>Diff Viewer</Text>
+          <Text style={styles.pageSub}>Compare backup against current device messages.</Text>
         </View>
 
-        {/* Stats Bento */}
+        {/* Stat bento */}
         <View style={styles.statsRow}>
-          <View style={styles.statCard}>
+          <TouchableOpacity style={styles.statCard} onPress={() => setActiveTab('added')} activeOpacity={0.8}>
             {loading
-              ? <ActivityIndicator color={C.primary} size="small" style={{ marginBottom: 8 }} />
-              : <MaterialIcons name="add-circle" size={24} color={C.primary} style={{ marginBottom: 8 }} />
+              ? <ActivityIndicator color={C.primary} size="small" style={{ marginBottom: 6 }} />
+              : <MaterialIcons name="add-circle" size={22} color={C.primary} style={{ marginBottom: 6 }} />
             }
-            <Text style={[styles.statNum, { color: C.primary }]}>
-              {loading ? '—' : `+${addedCount.toLocaleString()}`}
-            </Text>
-            <Text style={styles.statSub}>New messages found</Text>
-          </View>
-          <View style={styles.statCard}>
+            <Text style={[styles.statNum, { color: C.primary }]}>{loading ? '—' : `+${addedCount}`}</Text>
+            <Text style={styles.statSub}>Added</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.statCard} onPress={() => setActiveTab('removed')} activeOpacity={0.8}>
             {loading
-              ? <ActivityIndicator color={C.error} size="small" style={{ marginBottom: 8 }} />
-              : <MaterialIcons name="remove-circle" size={24} color={C.error} style={{ marginBottom: 8 }} />
+              ? <ActivityIndicator color={C.error} size="small" style={{ marginBottom: 6 }} />
+              : <MaterialIcons name="remove-circle" size={22} color={C.error} style={{ marginBottom: 6 }} />
             }
-            <Text style={[styles.statNum, { color: C.error }]}>
-              {loading ? '—' : `-${removedCount.toLocaleString()}`}
-            </Text>
-            <Text style={styles.statSub}>Messages to be removed</Text>
-          </View>
-          <View style={styles.statCard}>
+            <Text style={[styles.statNum, { color: C.error }]}>{loading ? '—' : `-${removedCount}`}</Text>
+            <Text style={styles.statSub}>Removed</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.statCard} onPress={() => setActiveTab('conflicts')} activeOpacity={0.8}>
             {loading
-              ? <ActivityIndicator color={C.tertiary} size="small" style={{ marginBottom: 8 }} />
-              : <MaterialIcons name="warning" size={24} color={C.tertiary} style={{ marginBottom: 8 }} />
+              ? <ActivityIndicator color={C.tertiary} size="small" style={{ marginBottom: 6 }} />
+              : <MaterialIcons name="warning" size={22} color={C.tertiary} style={{ marginBottom: 6 }} />
             }
-            <Text style={[styles.statNum, { color: C.tertiary }]}>
-              {loading ? '—' : conflictCount.toLocaleString()}
-            </Text>
-            <Text style={styles.statSub}>Manual conflicts</Text>
-          </View>
+            <Text style={[styles.statNum, { color: C.tertiary }]}>{loading ? '—' : conflictCount}</Text>
+            <Text style={styles.statSub}>Conflicts</Text>
+          </TouchableOpacity>
         </View>
 
-        {/* Conflict Resolution */}
-        <View style={{ gap: S.sm }}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Conflict Resolution</Text>
-            <View style={styles.statusPill}>
-              <Text style={styles.statusPillTxt}>
-                {loading ? 'Analyzing' : conflictCount > 0 ? 'Needs Review' : 'No Conflicts'}
-              </Text>
+        {/* Tab bar */}
+        <TabBar
+          active={activeTab}
+          counts={{ added: addedCount, removed: removedCount, conflicts: conflictCount }}
+          onSelect={setActiveTab}
+        />
+
+        {/* View mode toggle — only for conflicts */}
+        {activeTab === 'conflicts' && !loading && conflictCount > 0 && (
+          <View style={styles.viewToggleRow}>
+            <Text style={styles.viewToggleLabel}>View mode</Text>
+            <View style={styles.viewToggleBtns}>
+              <TouchableOpacity
+                style={[styles.viewToggleBtn, viewMode === 'stack' && styles.viewToggleBtnActive]}
+                onPress={() => setViewMode('stack')}
+              >
+                <MaterialIcons name="view-agenda" size={14} color={viewMode === 'stack' ? C.primary : C.textFaint} />
+                <Text style={[styles.viewToggleTxt, viewMode === 'stack' && { color: C.primary }]}>Stacked</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.viewToggleBtn, viewMode === 'side' && styles.viewToggleBtnActive]}
+                onPress={() => setViewMode('side')}
+              >
+                <MaterialIcons name="view-column" size={14} color={viewMode === 'side' ? C.primary : C.textFaint} />
+                <Text style={[styles.viewToggleTxt, viewMode === 'side' && { color: C.primary }]}>Side by Side</Text>
+              </TouchableOpacity>
             </View>
           </View>
+        )}
 
-          {loading ? (
-            <View style={styles.loadingCard}>
-              <ActivityIndicator color={C.primary} size="small" />
-              <Text style={{ color: C.textMuted, fontSize: 13, marginLeft: 10 }}>
-                Reading device messages & computing diff...
-              </Text>
-            </View>
-          ) : conflictCount === 0 ? (
-            <View style={styles.emptyConflicts}>
-              <MaterialIcons name="check-circle" size={36} color={C.primary} />
-              <Text style={styles.emptyConflictsTxt}>
-                {addedCount === 0 && removedCount === 0
-                  ? 'Backup matches your device exactly — nothing to restore.'
-                  : 'No conflicts detected. Safe to confirm restore.'}
-              </Text>
-            </View>
-          ) : (
-            diff!.conflicts.map((conflict, i) => (
-              <ConflictCard key={`${conflict.local.id}-${i}`} conflict={conflict} index={i} />
-            ))
-          )}
+        {/* Content */}
+        <View style={{ gap: S.md }}>
+          {renderContent()}
         </View>
 
         <View style={{ height: 160 }} />
       </ScrollView>
 
-      {/* Sticky Footer */}
+      {/* Sticky footer */}
       <View style={styles.footer}>
         <View style={styles.footerIntegrity}>
           <MaterialIcons
             name={isDefault ? 'verified-user' : 'security'}
-            size={20}
+            size={18}
             color={isDefault ? C.primary : C.textMuted}
           />
           <View style={{ flex: 1 }}>
             <Text style={styles.footerIntegrityTitle}>
-              Default SMS App:{' '}
+              Default SMS:{' '}
               <Text style={{ color: isDefault ? C.primary : C.error }}>
-                {isDefault === null ? 'Checking…' : isDefault ? 'This app ✓' : 'Not set — tap Confirm to fix'}
+                {isDefault === null ? 'Checking…' : isDefault ? 'This app ✓' : 'Not set'}
               </Text>
             </Text>
             <Text style={styles.footerIntegritySub}>
               {loadedBackup
                 ? `${loadedBackup.metadata.messageCount?.toLocaleString() ?? '?'} messages · ${loadedBackup.metadata.device}`
-                : 'AES-256 Encrypted Vault'}
+                : encrypted === '1' ? 'AES-256 Encrypted Vault' : 'Local backup'}
             </Text>
           </View>
         </View>
@@ -236,12 +604,12 @@ export default function RestoreScreen() {
             <Text style={styles.cancelBtnTxt}>Cancel</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.confirmBtn, (loading || restoring || requestingDefault) && { opacity: 0.6 }]}
+            style={[styles.confirmBtn, (loading || restoring) && { opacity: 0.55 }]}
             onPress={handleConfirmRestore}
-            disabled={loading || restoring || requestingDefault}
+            disabled={loading || restoring}
             activeOpacity={0.85}
           >
-            {restoring || requestingDefault
+            {restoring
               ? <ActivityIndicator color={C.onPrimary} size="small" />
               : <Text style={styles.confirmBtnTxt}>Confirm Restore</Text>
             }
@@ -254,46 +622,11 @@ export default function RestoreScreen() {
   )
 }
 
-function ConflictCard({ conflict, index }: { conflict: MessageConflict; index: number }) {
-  const isEdited = conflict.local.type === 1 // inbound = might be locally-edited version
-  const label = isEdited ? 'Edited' : 'Conflict'
-  const pillStyle = isEdited ? styles.editedPill : styles.removedPill
-  const pillTxtStyle = isEdited ? styles.editedPillTxt : styles.removedPillTxt
-  const name = conflict.local.address ?? `Unknown #${index + 1}`
-  const shortName = name.length > 20 ? name.slice(0, 18) + '…' : name
-
+function EmptyState({ icon, text }: { icon: string; text: string }) {
   return (
-    <View style={styles.conflictCard}>
-      <View style={styles.conflictHeader}>
-        <View style={[styles.conflictAvatar, isEdited ? styles.conflictAvatarPrimary : styles.conflictAvatarError]}>
-          <MaterialIcons name="person" size={16} color={isEdited ? C.primary : C.error} />
-        </View>
-        <Text style={styles.conflictName}>{shortName}</Text>
-        <View style={pillStyle}>
-          <Text style={pillTxtStyle}>{label}</Text>
-        </View>
-      </View>
-      <View style={styles.diffRow}>
-        <View style={[styles.diffSide, { backgroundColor: C.surfaceContainerLowest + '4D' }]}>
-          <Text style={styles.diffSideLabel}>Local Device</Text>
-          <View style={styles.localBubble}>
-            <Text style={styles.diffMsgText} numberOfLines={4}>{conflict.local.body}</Text>
-            <Text style={styles.diffTimestamp}>{formatDate(conflict.local.date)}</Text>
-          </View>
-        </View>
-        <View style={[styles.diffSide, { backgroundColor: 'rgba(0,107,93,0.05)' }]}>
-          <View style={styles.diffSideLabelRow}>
-            <Text style={[styles.diffSideLabel, { color: C.primary }]}>Vault Backup</Text>
-            <MaterialIcons name="verified-user" size={14} color={C.primary} />
-          </View>
-          <View style={styles.vaultBubble}>
-            <Text style={styles.diffMsgText} numberOfLines={4}>{conflict.backup.body}</Text>
-            <Text style={[styles.diffTimestamp, { color: 'rgba(114,237,214,0.6)' }]}>
-              {formatDate(conflict.backup.dateSent ?? conflict.backup.date)}
-            </Text>
-          </View>
-        </View>
-      </View>
+    <View style={styles.emptyState}>
+      <MaterialIcons name={icon as any} size={36} color={C.textFaint} />
+      <Text style={styles.emptyStateTxt}>{text}</Text>
     </View>
   )
 }
@@ -309,95 +642,41 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: S.sm },
   statCard: {
     flex: 1, backgroundColor: C.surfaceContainerHigh,
-    borderRadius: R.xl, padding: S.md,
+    borderRadius: R.xl, padding: S.md, alignItems: 'flex-start',
   },
   statNum: { fontSize: 22, fontWeight: '800' },
-  statSub: { fontSize: 11, color: C.textMuted, marginTop: 2, lineHeight: 16 },
+  statSub: { fontSize: 10, color: C.textMuted, marginTop: 2 },
 
-  sectionHeader: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', paddingHorizontal: 4,
+  viewToggleRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 2,
   },
-  sectionTitle: { fontSize: 18, fontWeight: '800', color: C.text },
-  statusPill: {
-    backgroundColor: C.surfaceContainer, borderRadius: R.sm,
-    paddingHorizontal: 8, paddingVertical: 4,
+  viewToggleLabel: { fontSize: 11, fontWeight: '700', color: C.textFaint, textTransform: 'uppercase', letterSpacing: 1 },
+  viewToggleBtns: { flexDirection: 'row', gap: 4 },
+  viewToggleBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: R.lg,
+    backgroundColor: C.surfaceContainerHigh,
   },
-  statusPillTxt: {
-    fontSize: 9, fontWeight: '900', color: C.textFaint,
-    textTransform: 'uppercase', letterSpacing: 1.5,
+  viewToggleBtnActive: {
+    backgroundColor: 'rgba(93,218,195,0.12)',
+    borderWidth: 1, borderColor: 'rgba(93,218,195,0.25)',
   },
+  viewToggleTxt: { fontSize: 11, fontWeight: '700', color: C.textFaint },
 
   loadingCard: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: C.surfaceContainerLow, borderRadius: R.xl, padding: S.lg,
   },
 
-  emptyConflicts: {
-    alignItems: 'center', paddingVertical: 32, gap: 12,
+  emptyState: {
+    alignItems: 'center', paddingVertical: 40, gap: 12,
     backgroundColor: C.surfaceContainerLow, borderRadius: R.xl,
   },
-  emptyConflictsTxt: {
+  emptyStateTxt: {
     fontSize: 13, color: C.textMuted, textAlign: 'center',
     paddingHorizontal: S.lg, lineHeight: 20,
-  },
-
-  conflictCard: {
-    backgroundColor: C.surfaceContainerLow,
-    borderRadius: R.xl, overflow: 'hidden',
-    borderWidth: 1, borderColor: 'rgba(62,73,70,0.1)',
-  },
-  conflictHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: C.surfaceContainerHigh,
-    paddingHorizontal: S.md, paddingVertical: 12,
-  },
-  conflictAvatar: {
-    width: 32, height: 32, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  conflictAvatarPrimary: { backgroundColor: 'rgba(93,218,195,0.15)' },
-  conflictAvatarError: { backgroundColor: 'rgba(147,0,10,0.2)' },
-  conflictName: { flex: 1, fontSize: 13, fontWeight: '700', color: C.text },
-  editedPill: {
-    backgroundColor: 'rgba(93,218,195,0.1)', borderRadius: R.full,
-    paddingHorizontal: 8, paddingVertical: 3,
-  },
-  editedPillTxt: {
-    fontSize: 9, fontWeight: '800', color: C.primary,
-    textTransform: 'uppercase', letterSpacing: 1,
-  },
-  removedPill: {
-    backgroundColor: 'rgba(255,180,171,0.1)', borderRadius: R.full,
-    paddingHorizontal: 8, paddingVertical: 3,
-  },
-  removedPillTxt: {
-    fontSize: 9, fontWeight: '800', color: C.error,
-    textTransform: 'uppercase', letterSpacing: 1,
-  },
-
-  diffRow: { flexDirection: 'row' },
-  diffSide: { flex: 1, padding: S.md, gap: 8 },
-  diffSideLabel: {
-    fontSize: 9, fontWeight: '800', color: C.textFaint,
-    textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 4,
-  },
-  diffSideLabelRow: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', marginBottom: 4,
-  },
-  localBubble: {
-    backgroundColor: C.surfaceVariant,
-    borderRadius: R.xl, borderBottomLeftRadius: 3, padding: S.md,
-  },
-  vaultBubble: {
-    backgroundColor: C.primaryContainer,
-    borderRadius: R.xl, borderBottomRightRadius: 3, padding: S.md,
-  },
-  diffMsgText: { fontSize: 12, color: C.text, lineHeight: 18 },
-  diffTimestamp: {
-    fontSize: 9, color: 'rgba(226,226,229,0.5)',
-    marginTop: 4, textAlign: 'right', fontStyle: 'italic',
   },
 
   footer: {
@@ -406,7 +685,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: 'rgba(62,73,70,0.1)',
     gap: S.sm,
   },
-  footerIntegrity: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  footerIntegrity: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   footerIntegrityTitle: { fontSize: 13, fontWeight: '700', color: C.text },
   footerIntegritySub: { fontSize: 10, color: C.textMuted },
   footerBtns: { flexDirection: 'row', gap: S.sm },

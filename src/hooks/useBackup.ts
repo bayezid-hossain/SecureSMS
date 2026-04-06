@@ -8,6 +8,7 @@ export function useBackup() {
   const setBackupList = useAppStore((s) => s.setBackupList)
   const setEncryptionStatus = useAppStore((s) => s.setEncryptionStatus)
   const setBackupFetchedCount = useAppStore((s) => s.setBackupFetchedCount)
+  const setBackupTotalCount = useAppStore((s) => s.setBackupTotalCount)
 
   const startBackup = useCallback(
     async (password?: string) => {
@@ -18,7 +19,10 @@ export function useBackup() {
       try {
         await createBackup({
           password,
-          onProgress: (count) => setBackupFetchedCount(count),
+          onProgress: (fetched, total) => {
+            setBackupFetchedCount(fetched)
+            if (total !== undefined) setBackupTotalCount(total)
+          },
         })
         if (password) setEncryptionStatus('done')
         const list = await listBackups()
