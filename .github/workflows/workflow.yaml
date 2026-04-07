@@ -28,7 +28,7 @@ jobs:
           java-version: '17'
           
       - name: Install Node Dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
         
       - name: Create .env
         run: |
@@ -45,21 +45,34 @@ jobs:
       - name: Make Gradle Executable
         run: chmod +x android/gradlew
         
-      - name: Build APK Release
+      - name: Build APK + AAB Release
         env:
           EXPO_PUBLIC_API_MODE: production
           NODE_ENV: production
-        run: cd android && ./gradlew assembleRelease
+        run: cd android && ./gradlew assembleRelease bundleRelease --no-daemon
+
         
       - name: Sign APK
         uses: r0adkll/sign-android-release@v1
-        id: sign_app
+        id: sign_apk
         with:
           releaseDirectory: android/app/build/outputs/apk/release
           signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
           alias: ${{ secrets.KEYSTORE_ALIAS }}
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
+          buildToolsVersion: '34.0.0'
+
+      - name: Sign AAB
+        uses: r0adkll/sign-android-release@v1
+        id: sign_aab
+        with:
+          releaseDirectory: android/app/build/outputs/bundle/release
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEYSTORE_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+          buildToolsVersion: '34.0.0'
 
       - name: Extract Release Notes
         id: release_notes
@@ -78,7 +91,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ steps.sign_app.outputs.signedReleaseFile }}
+          files: |
+            ${{ steps.sign_apk.outputs.signedReleaseFile }}
+            ${{ steps.sign_aab.outputs.signedReleaseFile }}
           name: Release ${{ github.ref_name }}
           body_path: RELEASE_NOTES.txt
           draft: false
