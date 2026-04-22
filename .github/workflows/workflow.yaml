@@ -61,7 +61,8 @@ jobs:
           alias: ${{ secrets.KEYSTORE_ALIAS }}
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
-          buildToolsVersion: '34.0.0'
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
 
       - name: Sign AAB
         uses: r0adkll/sign-android-release@v1
@@ -72,7 +73,8 @@ jobs:
           alias: ${{ secrets.KEYSTORE_ALIAS }}
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
-          buildToolsVersion: '34.0.0'
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
 
       - name: Extract Release Notes
         id: release_notes
