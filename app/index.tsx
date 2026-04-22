@@ -16,6 +16,7 @@ import { C, R, S } from '../src/theme'
 import { listBackups, BackupListItem } from '../src/services/backup.service'
 import { useBackup } from '../src/hooks/useBackup'
 import { formatRelative } from '../src/utils/date'
+import { isDefaultSmsApp, requestDefaultSmsApp } from '../src/services/sms.service'
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -24,25 +25,26 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-function computeHealthScore(permGranted: boolean, backups: BackupListItem[]): number {
-  let score = 0
-  if (permGranted) score += 40
-  if (backups.length > 0) score += 30
-  if (backups.length > 0) {
-    const daysSince = (Date.now() - backups[0].createdAt) / (1000 * 60 * 60 * 24)
-    if (daysSince < 1) score += 20
-    else if (daysSince < 7) score += 10
-    else if (daysSince < 30) score += 5
-  }
-  score += 10 // AES-256 always active
-  return score
-}
-
 function healthLabel(score: number): string {
   if (score >= 90) return 'Exceptional. All security modules active.'
   if (score >= 70) return 'Good. Consider backing up more frequently.'
   if (score >= 50) return 'Fair. Grant permissions and create a backup.'
-  return 'At risk. Grant SMS permissions to get started.'
+  return 'At risk. Check SMS permissions and default status.'
+}
+
+function computeHealthScore(permGranted: boolean, isDefault: boolean, backups: BackupListItem[]): number {
+  let score = 0
+  if (permGranted) score += 30
+  if (isDefault) score += 20
+  if (backups.length > 0) score += 20
+  if (backups.length > 0) {
+    const daysSince = (Date.now() - backups[0].createdAt) / (1000 * 60 * 60 * 24)
+    if (daysSince < 1) score += 20
+    else if (daysSince < 7) score += 10
+    else if (daysSince < 14) score += 5
+  }
+  score += 10 // AES-256 always active
+  return score
 }
 
 export default function DashboardScreen() {
@@ -52,15 +54,27 @@ export default function DashboardScreen() {
   const [showDisclosure, setShowDisclosure] = useState(false)
   const [secureModalVisible, setSecureModalVisible] = useState(false)
   const [permGranted, setPermGranted] = useState(false)
+  const [isDefault, setIsDefault] = useState(false)
   const [backups, setBackups] = useState<BackupListItem[]>([])
   const [loading, setLoading] = useState(true)
 
   async function checkPermissions() {
     if (Platform.OS === 'android') {
-      const status = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_SMS)
+      const [status, defaultStatus] = await Promise.all([
+        PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_SMS),
+        isDefaultSmsApp()
+      ])
       setPermGranted(status)
+      setIsDefault(defaultStatus)
+      
       if (!status) {
         setShowDisclosure(true)
+      } else if (!defaultStatus) {
+        // Automatic prompt if permissions are OK but not default
+        try {
+          const result = await requestDefaultSmsApp()
+          setIsDefault(result)
+        } catch { /* ignore */ }
       }
     }
   }
@@ -127,7 +141,7 @@ export default function DashboardScreen() {
   const totalBytes = backups.reduce((acc, b) => acc + b.size, 0)
   const lastBackup = backups[0] ?? null
   const encryptedCount = backups.filter(b => b.encrypted).length
-  const healthScore = computeHealthScore(permGranted, backups)
+  const healthScore = computeHealthScore(permGranted, isDefault, backups)
   const healthPct = `${healthScore}%` as `${number}%`
 
   return (
@@ -314,6 +328,19 @@ export default function DashboardScreen() {
           <TouchableOpacity style={styles.permBanner} onPress={() => setShowDisclosure(true)}>
             <MaterialIcons name="warning" size={16} color="#713f12" />
             <Text style={styles.permBannerTxt}>Tap to grant SMS permissions</Text>
+          </TouchableOpacity>
+        )}
+
+        {permGranted && !isDefault && (
+          <TouchableOpacity 
+            style={[styles.permBanner, { backgroundColor: '#dcfce7', borderColor: '#86efac' }]} 
+            onPress={async () => {
+              const res = await requestDefaultSmsApp()
+              setIsDefault(res)
+            }}
+          >
+            <MaterialIcons name="security" size={16} color={C.primary} />
+            <Text style={[styles.permBannerTxt, { color: C.primary }]}>Tap to set SecureSMS as default app</Text>
           </TouchableOpacity>
         )}
       </ScrollView>

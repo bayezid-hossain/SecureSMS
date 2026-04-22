@@ -128,6 +128,11 @@ export default function LibraryScreen() {
       alert('Google Drive Not Connected', 'Please connect your Google account in Settings first.', [{ text: 'Go to Settings', onPress: () => router.push('/settings') }, { text: 'Cancel', style: 'cancel' }], 'info')
       return
     }
+    // Auto-enable drive sync if user initiates from library
+    const { driveEnabled, setDriveEnabled } = useAppStore.getState()
+    if (!driveEnabled) {
+      await setDriveEnabled(true)
+    }
     setSyncStatus('syncing')
     try {
       const token = await getAccessToken()

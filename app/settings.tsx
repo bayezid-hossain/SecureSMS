@@ -553,24 +553,6 @@ export default function SettingsScreen() {
                   : <MaterialIcons name="chevron-right" size={18} color={C.textFaint} />
               }
             />
-            <View style={styles.rowDivider} />
-            <SettingRow
-              icon="cloud-upload" iconColor={C.tertiary}
-              label="Sync to Google Drive"
-              sub={
-                syncStatus === 'syncing' ? 'Uploading…'
-                : activeAccount ? `Connected to ${activeAccount.email}`
-                : 'Tap to connect a Google account'
-              }
-              onPress={handleSyncToDrive}
-              right={
-                syncStatus === 'syncing'
-                  ? <ActivityIndicator color={C.tertiary} size="small" />
-                  : !activeAccount
-                  ? <Text style={[styles.valueChip, { color: C.tertiary }]}>Connect</Text>
-                  : <MaterialIcons name="chevron-right" size={18} color={C.textFaint} />
-              }
-            />
           </View>
         </View>
 

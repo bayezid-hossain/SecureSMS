@@ -409,35 +409,9 @@ export default function RestoreScreen() {
     const currentlyDefault = isDefault ?? (await isDefaultSmsApp())
     setIsDefault(currentlyDefault)
     if (!currentlyDefault) {
-      alert(
-        'Default SMS App Required',
-        'SecureSMS must be your default SMS app to insert messages.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Change via Dialog',
-            onPress: () => {
-              sentToSettingsRef.current = true
-              setTimeout(async () => {
-                const result = await requestDefaultSmsApp()
-                if (result) {
-                  setIsDefault(true)
-                  alert('Default App Set', 'SecureSMS is now your default SMS app.', undefined, 'verified-user')
-                }
-              }, 300)
-            },
-          },
-          {
-            text: 'Open Settings',
-            onPress: async () => {
-              sentToSettingsRef.current = true
-              await openDefaultSmsSettings()
-            },
-          },
-        ],
-        'error'
-      )
-      return
+      const result = await requestDefaultSmsApp()
+      if (!result) return // User cancelled again, stay on screen
+      setIsDefault(true)
     }
     setRestoring(true)
     try {

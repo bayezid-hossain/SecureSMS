@@ -101,13 +101,28 @@ jobs:
           let notes = match ? match[1].trim() : 'Bug fixes and performance improvements.';
           fs.writeFileSync('RELEASE_NOTES.txt', notes);
           EOF
+
+      - name: Get App Details
+        id: app_details
+        run: |
+          node -e "
+            const app = require('./app.json').expo;
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'slug=' + app.slug + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + app.version + '\n');
+          "
           
+      - name: Rename Artifacts
+        run: |
+          mv android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/${{ steps.app_details.outputs.slug }}-v${{ steps.app_details.outputs.version }}.apk
+          mv android/app/build/outputs/bundle/release/app-release.aab android/app/build/outputs/bundle/release/${{ steps.app_details.outputs.slug }}-v${{ steps.app_details.outputs.version }}.aab
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            android/app/build/outputs/apk/release/app-release.apk
-            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/apk/release/${{ steps.app_details.outputs.slug }}-v${{ steps.app_details.outputs.version }}.apk
+            android/app/build/outputs/bundle/release/${{ steps.app_details.outputs.slug }}-v${{ steps.app_details.outputs.version }}.aab
           name: Release ${{ github.ref_name }}
           body_path: RELEASE_NOTES.txt
           draft: false
